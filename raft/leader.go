@@ -2,6 +2,7 @@ package raft
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/HelloCodeMing/raft-rocks/common"
@@ -17,8 +18,8 @@ import (
 // Use committer to update commitIndex, and apply command to state machine(applyCh).
 // Connect replicator and committer through a channel
 func (rf *Raft) doLeader() {
-	rf.logInfo("Become leader")
-	defer rf.logInfo("Leader quit.")
+	glog.Infof("%s Become leader", rf.stateString())
+	defer glog.Infof("%s Leader quit.", rf.stateString())
 
 	rf.Lock()
 	rf.nextIndex = make([]int, len(rf.peers))
@@ -115,4 +116,42 @@ func (rf *Raft) leaderCommit() (updated bool) {
 		}
 	}
 	return
+}
+
+// Replicate command to all peers.
+func (rf *Raft) replicator(peer int, quitCh <-chan bool, done *sync.WaitGroup) {
+	defer done.Done()
+	rf.logInfo("Replicator start for peer %d", peer)
+	defer rf.logInfo("Replicator for peer %d quit", peer)
+
+	const retreatLimit = 4
+	var retreatCnt int32 = 1 // for fast retreat
+
+	// initial heartbeat
+	go rf.replicateLog(peer, &retreatCnt)
+	for {
+		// 1. no submit, periodically check if exists log to replicate
+		// 2. exists submit, replicateLog
+		select {
+		case <-quitCh:
+			return
+		case <-time.After(time.Duration(heartbeatTO)):
+		case <-rf.submitCh:
+		}
+
+		go func() {
+			// when to send snapshot
+			// 1. retreat too many times
+			// 2. nextIndex reach lastIncluded
+			snapshot := rf.lastIncludedIndex > 0 &&
+				(atomic.LoadInt32(&retreatCnt) > retreatLimit || rf.nextIndex[peer] <= rf.lastIncludedIndex)
+			if snapshot {
+				rf.sendSnapshotTo(peer)
+				atomic.StoreInt32(&retreatCnt, 1)
+			} else {
+				rf.replicateLog(peer, &retreatCnt)
+			}
+			rf.commitCh <- true
+		}()
+	}
 }

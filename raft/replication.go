@@ -3,7 +3,6 @@ package raft
 import (
 	"fmt"
 	"log"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -76,7 +75,6 @@ func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *Appe
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	session := NewAppendEntriesSession(rf.me, rf.currentTerm, args, reply)
 	session.trace("args: %+v", *args)
-	// session.trace("raft state: %+v", rf)
 	reply.Success = false
 	rf.appendEntriesCh <- session
 	<-session.done
@@ -210,42 +208,4 @@ func (rf *Raft) retreatForPeer(peer int) {
 		}
 	}
 	*idx = maxInt(*idx, rf.lastIncludedIndex+1)
-}
-
-// Replicate command to all peers.
-func (rf *Raft) replicator(peer int, quitCh <-chan bool, done *sync.WaitGroup) {
-	defer done.Done()
-	rf.logInfo("Replicator start for peer %d", peer)
-	defer rf.logInfo("Replicator for peer %d quit", peer)
-
-	const retreatLimit = 4
-	var retreatCnt int32 = 1 // for fast retreat
-
-	// initial heartbeat
-	go rf.replicateLog(peer, &retreatCnt)
-	for {
-		// 1. no submit, periodically check if exists log to replicate
-		// 2. exists submit, replicateLog
-		select {
-		case <-quitCh:
-			return
-		case <-time.After(time.Duration(heartbeatTO)):
-		case <-rf.submitCh:
-		}
-
-		go func() {
-			// when to send snapshot
-			// 1. retreat too many times
-			// 2. nextIndex reach lastIncluded
-			snapshot := rf.lastIncludedIndex > 0 &&
-				(atomic.LoadInt32(&retreatCnt) > retreatLimit || rf.nextIndex[peer] <= rf.lastIncludedIndex)
-			if snapshot {
-				rf.sendSnapshotTo(peer)
-				atomic.StoreInt32(&retreatCnt, 1)
-			} else {
-				rf.replicateLog(peer, &retreatCnt)
-			}
-			rf.commitCh <- true
-		}()
-	}
 }
