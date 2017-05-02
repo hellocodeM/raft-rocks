@@ -7,10 +7,20 @@ import (
 	"sync/atomic"
 	"time"
 
+	"flag"
+
 	"golang.org/x/net/trace"
 )
 
 const DumpRPCAppendEntries = false
+
+var (
+	heartbeatTO time.Duration
+)
+
+func init() {
+	flag.DurationVar(&heartbeatTO, "leader_heartbeat", 500*time.Millisecond, "leader heartbeat interval")
+}
 
 type AppendEntriesArgs struct {
 	Term         int32      // leader's term
@@ -208,7 +218,6 @@ func (rf *Raft) replicator(peer int, quitCh <-chan bool, done *sync.WaitGroup) {
 	rf.logInfo("Replicator start for peer %d", peer)
 	defer rf.logInfo("Replicator for peer %d quit", peer)
 
-	const heartbeatTO = int32(200 * time.Millisecond)
 	const retreatLimit = 4
 	var retreatCnt int32 = 1 // for fast retreat
 

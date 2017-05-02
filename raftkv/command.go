@@ -11,7 +11,6 @@ type KVCmdType int8
 const (
 	CmdGet KVCmdType = iota
 	CmdPut
-	CmdAppend
 )
 
 type KVCommand struct {
@@ -31,7 +30,7 @@ func NewKVCommand(opType KVCmdType, req interface{}, res interface{}, clientID i
 		Res:      res,
 		ClientID: clientID,
 		SN:       SN,
-		tracer:   trace.New("RaftKV.PutAppend", fmt.Sprintf("<%d:%d>", clientID, SN)),
+		tracer:   trace.New("RaftKV.Put", fmt.Sprintf("<%d:%d>", clientID, SN)),
 		LogID:    logID,
 	}
 }

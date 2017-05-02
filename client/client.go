@@ -16,10 +16,11 @@ var (
 	RetryInterval time.Duration
 
 	// client actions
-	Putting bool
-	Getting bool
-	Key     string
-	Value   string
+	Putting  bool
+	Getting  bool
+	Key      string
+	Value    string
+	ClientID int
 )
 
 func init() {
@@ -29,6 +30,7 @@ func init() {
 	flag.BoolVar(&Getting, "get", false, "get a key/value")
 	flag.StringVar(&Key, "key", "", "key")
 	flag.StringVar(&Value, "value", "", "value")
+	flag.IntVar(&ClientID, "client_id", 0, "client id")
 }
 
 // Clerk client implementation
@@ -40,14 +42,11 @@ type Clerk struct {
 	SN       int
 }
 
-var clientCnt = 0
-
 // MakeClerk create a client
 func MakeClerk(servers []string) *Clerk {
 	ck := new(Clerk)
 	ck.serverAddrs = servers
-	clientCnt++
-	ck.clientID = clientCnt
+	ck.clientID = ClientID
 	ck.logInfo("Created clerk, clientID:%d", ck.clientID)
 	return ck
 }
@@ -58,7 +57,7 @@ func (ck *Clerk) logInfo(format string, args ...interface{}) {
 }
 
 // Get get a key/value
-func (ck *Clerk) Get(key string) (value string) {
+func (ck *Clerk) Get(key string) (string, bool) {
 	logID := common.GenLogID()
 	ck.SN++
 	ck.logInfo("%s Geting: {k:%s}", logID, key)
@@ -73,33 +72,32 @@ func (ck *Clerk) Get(key string) (value string) {
 		}
 		err = client.Call("RaftKV.Get", &args, reply)
 		if err == nil && reply.Err == common.OK {
-			return
+			return reply.Value, true
 		}
 		ck.handleError(err, reply.Err)
 	}
 
-	return
+	return "", false
 }
 
 func (ck *Clerk) PutAppend(logID string, key string, value string, isAppend bool) {
 	ck.SN++
-	args := common.PutAppendArgs{
+	args := common.PutArgs{
 		Key:      key,
 		Value:    value,
-		IsAppend: isAppend,
 		SN:       ck.SN,
 		ClientID: ck.clientID,
 		LogID:    logID,
 	}
 	for r := 0; r < 10; r++ {
-		reply := &common.PutAppendReply{}
+		reply := &common.PutReply{}
 		client, err := rpc.DialHTTP("tcp", ck.serverAddrs[ck.leader])
 		if err != nil {
 			glog.Warningf("Dial %s failed", ck.serverAddrs[ck.leader])
 			ck.rollLeader()
 			continue
 		}
-		err = client.Call("RaftKV.PutAppend", &args, reply)
+		err = client.Call("RaftKV.Put", &args, reply)
 		if err == nil && reply.Err == common.OK {
 			return
 		}
@@ -138,13 +136,6 @@ func (ck *Clerk) Put(key string, value string) {
 	ck.logInfo("%s Put to <%d> succeed, {k:%s, v:%s}", logID, ck.leader, key, value)
 }
 
-func (ck *Clerk) Append(key string, value string) {
-	logID := common.GenLogID()
-	ck.logInfo("%s Appending: {k:%s, v:%s}", logID, key, value)
-	ck.PutAppend(logID, key, value, true)
-	ck.logInfo("%s Append to <%d> succeed, {k:%s, v:%s}", logID, ck.leader, key, value)
-}
-
 func main() {
 	flag.Parse()
 
@@ -157,8 +148,12 @@ func main() {
 		}
 	} else if Getting {
 		if Key != "" {
-			value := clerk.Get(Key)
-			fmt.Printf("%s -> %s\n", Key, value)
+			value, ok := clerk.Get(Key)
+			if ok {
+				fmt.Printf("%s -> %s\n", Key, value)
+			} else {
+				fmt.Printf("%s not exists", Key)
+			}
 		} else {
 			fmt.Println("Since you are getting, key should be provided")
 		}

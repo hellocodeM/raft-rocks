@@ -6,16 +6,23 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"net/http"
 	"sync"
 	"time"
 
-	"github.com/HelloCodeMing/raft-rocks/common"
+	"flag"
 
+	"github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/golang/glog"
 	"golang.org/x/net/trace"
 )
 
-const ReportRaftState = true
+var (
+	reportRaftState bool
+)
+
+func init() {
+	flag.BoolVar(&reportRaftState, "report_raft_state", false, "report raft state")
+}
 
 type ApplyMsg struct {
 	Index       int
@@ -24,8 +31,7 @@ type ApplyMsg struct {
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
 
-// A Go object implementing a single Raft peer.
-//
+// Raft A Go object implementing a single Raft peer.
 type Raft struct {
 	sync.RWMutex
 	peers     []*common.ClientEnd
@@ -148,7 +154,7 @@ func (rf *Raft) logInfo(format string, v ...interface{}) {
 	s := fmt.Sprintf(format, v...)
 	n := len(rf.peers) + 1
 	rf.tracer.Printf(s)
-	log.Printf("<%*d,%*d>: %s", rf.me+1, rf.me, n-rf.me-1, rf.currentTerm, s)
+	glog.V(common.VDebug).Infof("<%*d,%*d>: %s", rf.me+1, rf.me, n-rf.me-1, rf.currentTerm, s)
 }
 
 // any command to apply
@@ -189,7 +195,7 @@ func (rf *Raft) checkNewTerm(candidateID int32, newTerm int32) (beFollower bool)
 }
 
 func electionTO() time.Duration {
-	return time.Duration(500+rand.Int()%500) * time.Millisecond
+	return time.Duration(rand.Int63()%((electionTimeoutMax - electionTimeoutMin).Nanoseconds())) + electionTimeoutMin
 }
 
 func (rf *Raft) foreachPeer(f func(peer int)) {
@@ -274,7 +280,7 @@ func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh ch
 }
 
 func (raft *Raft) reporter() {
-	if !ReportRaftState {
+	if !reportRaftState {
 		return
 	}
 	ticker := time.NewTicker(2 * time.Second)
@@ -328,6 +334,7 @@ func (rf *Raft) SubmitCommand(command interface{}) (index int, term int, isLeade
 	rf.log.Append(logEntry)
 	index = rf.log.LastIndex()
 	term = int(rf.currentTerm)
+	rf.matchIndex[rf.me] = index
 	rf.persist()
 
 	rf.logInfo("SubmitCommand by leader, {index: %d, command: %v}", index, command)
@@ -347,9 +354,6 @@ func (rf *Raft) GetState() (currentTerm int, isLeader bool) {
 
 func init() {
 	log.SetFlags(log.Lmicroseconds)
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
 }
 
 func (rf *Raft) SetSnapshot(snapshotCB func(int, int32)) {

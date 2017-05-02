@@ -3,11 +3,24 @@ package raft
 import (
 	"fmt"
 	"log"
+	"time"
+
+	"flag"
 
 	"golang.org/x/net/trace"
 )
 
 const DumpRPCRequestVote = false
+
+var (
+	electionTimeoutMin time.Duration
+	electionTimeoutMax time.Duration
+)
+
+func init() {
+	flag.DurationVar(&electionTimeoutMin, "election_min", 1*time.Second, "minimum duration of election timeout")
+	flag.DurationVar(&electionTimeoutMax, "election_max", 2*time.Second, "maximum duration of election timeout")
+}
 
 type RequestVoteArgs struct {
 	Term         int32

@@ -3,24 +3,18 @@ package common
 import (
 	"fmt"
 	"math/rand"
-	"time"
 )
 
-const OpTimeout = 2 * time.Second
-const DumpRPCPutAppendTracing = true
-
-// Put or Append
-type PutAppendArgs struct { // implements ClerkArgs
-	Key      string
-	Value    string
-	IsAppend bool
+type PutArgs struct {
+	Key   string
+	Value string
 
 	SN       int // unique serial number for each client
 	ClientID int // clientId for tracing
 	LogID    string
 }
 
-type PutAppendReply struct { // implements ClerkReply
+type PutReply struct {
 	Err ClerkResult
 }
 

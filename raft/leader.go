@@ -3,6 +3,9 @@ package raft
 import (
 	"sync"
 	"time"
+
+	"github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/golang/glog"
 )
 
 // Leader
@@ -24,7 +27,7 @@ func (rf *Raft) doLeader() {
 	}
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.commitCh = make(chan bool)
-	rf.submitCh = make(chan bool)
+	rf.submitCh = make(chan bool, 10)
 	rf.Unlock()
 
 	quitCh := make(chan bool)
@@ -57,8 +60,8 @@ func (rf *Raft) doLeader() {
 // Check leader's commit index, update it if needed
 func (rf *Raft) committer(quitCh <-chan bool, done *sync.WaitGroup) {
 	defer done.Done()
-	rf.logInfo("Committer start")
-	defer rf.logInfo("Committer quit.")
+	glog.Infof("Committer start")
+	defer glog.Infof("Committer quit.")
 
 	const interval = 200 * time.Millisecond
 	for {
@@ -68,7 +71,9 @@ func (rf *Raft) committer(quitCh <-chan bool, done *sync.WaitGroup) {
 		case <-time.After(interval):
 		case <-rf.commitCh:
 		}
-		rf.leaderCommit()
+		if rf.leaderCommit() {
+			rf.checkApply()
+		}
 	}
 }
 
@@ -96,7 +101,7 @@ func (rf *Raft) leaderCommit() (updated bool) {
 		}
 		if cnt >= rf.majority() {
 			rf.commitIndex = N
-			rf.logInfo("Leader update commitIndex: %d", rf.commitIndex)
+			glog.V(common.VDebug).Infof("Leader update commitIndex: %d", rf.commitIndex)
 			updated = true
 			break
 		}

@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-
+	_ "net/http/pprof"
 	"strings"
 
 	"github.com/HelloCodeMing/raft-rocks/common"
@@ -32,9 +32,8 @@ func main() {
 	servers := make([]*common.ClientEnd, 0, len(Replicas)-1)
 	me := -1
 	for i, replica := range strings.Split(Replicas, ",") {
-		if replica != ServerAddr {
-			servers = append(servers, common.MakeClientEnd(replica))
-		} else {
+		servers = append(servers, common.MakeClientEnd(replica))
+		if replica == ServerAddr {
 			me = i
 		}
 	}
