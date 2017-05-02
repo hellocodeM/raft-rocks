@@ -100,12 +100,14 @@ func (kv *RaftKV) notify(cmd *KVCommand) {
 
 func (kv *RaftKV) Get(args *common.GetArgs, reply *common.GetReply) error {
 	cmd := NewKVCommand(CmdGet, args, reply, args.ClientID, args.SN, args.LogID)
+	defer cmd.tracer.Finish()
 	cmd.trace("args: %+v", *args)
 	return kv.submitCommand(cmd)
 }
 
 func (kv *RaftKV) Put(args *common.PutArgs, reply *common.PutReply) error {
 	cmd := NewKVCommand(CmdPut, args, reply, args.ClientID, args.SN, args.LogID)
+	defer cmd.tracer.Finish()
 	cmd.trace("args: %+v", *args)
 	return kv.submitCommand(cmd)
 }
@@ -121,11 +123,9 @@ func (kv *RaftKV) submitCommand(cmd *KVCommand) error {
 	_, _, isLeader := kv.rf.SubmitCommand(cmd)
 	if !isLeader {
 		cmd.trace("peer<%d> not leader, finish this operation", kv.me)
-		cmd.tracer.Finish()
 		return errNotLeader
 	}
 	err := kv.waitFor(cmd)
-	cmd.tracer.Finish()
 	return err
 }
 

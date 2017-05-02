@@ -136,17 +136,8 @@ func (rf *Raft) String() string {
 		rf.me, rf.role, rf.currentTerm, rf.votedFor, rf.commitIndex, rf.lastApplied, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log, rf.nextIndex)
 }
 
-func (rf *Raft) beFollower(candidateID int32, term int32) {
-	rf.currentTerm = term
-	rf.votedFor = candidateID
-	rf.role = follower
-	rf.persist()
-}
-
-func (rf *Raft) beFollowerLocked(candidateID int32, term int32) {
-	rf.Lock()
-	defer rf.Unlock()
-	rf.beFollower(candidateID, term)
+func (rf *Raft) stateString() string {
+	return fmt.Sprintf("<%d:%d>", rf.me, rf.currentTerm)
 }
 
 func (rf *Raft) logInfo(format string, v ...interface{}) {
@@ -274,7 +265,7 @@ func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh ch
 
 	go rf.startStateMachine()
 	go rf.reporter()
-	go rf.snapshoter()
+	// go rf.snapshoter()
 	return rf
 }
 
@@ -323,6 +314,9 @@ func (rf *Raft) SubmitCommand(command interface{}) (index int, term int, isLeade
 
 	rf.logInfo("SubmitCommand by leader, {index: %d, command: %v}", index, command)
 	rf.submitCh <- true
+	if len(rf.peers) == 1 {
+		rf.commitCh <- true
+	}
 	return
 }
 

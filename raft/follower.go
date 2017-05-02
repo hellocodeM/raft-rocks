@@ -1,10 +1,27 @@
 package raft
 
-import "time"
+import (
+	"time"
+
+	"github.com/golang/glog"
+)
+
+func (rf *Raft) beFollower(candidateID int32, term int32) {
+	rf.currentTerm = term
+	rf.votedFor = candidateID
+	rf.role = follower
+	rf.persist()
+}
+
+func (rf *Raft) beFollowerLocked(candidateID int32, term int32) {
+	rf.Lock()
+	defer rf.Unlock()
+	rf.beFollower(candidateID, term)
+}
 
 func (rf *Raft) doFollower() {
-	rf.logInfo("Become follower")
-	defer rf.logInfo("Follower quit")
+	glog.Infof("%s Become follower", rf.stateString())
+	defer glog.Infof("%s Follower quit", rf.stateString())
 
 	for {
 		select {

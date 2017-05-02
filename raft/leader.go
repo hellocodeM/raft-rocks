@@ -41,6 +41,14 @@ func (rf *Raft) doLeader() {
 	})
 	go rf.committer(quitCh, done)
 
+	// TODO it's a temporary work around
+	if len(rf.peers) == 1 {
+		go func() {
+			for range rf.submitCh {
+			}
+		}()
+	}
+
 	for {
 		select {
 		case <-rf.termChangedCh:
