@@ -25,7 +25,8 @@ func init() {
 
 type ApplyMsg struct {
 	Index       int
-	Command     interface{}
+	Term        int32
+	Command     *common.KVCommand
 	UseSnapshot bool   // ignore for lab2; only used in lab3
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
@@ -37,6 +38,7 @@ type Raft struct {
 	persister *Persister
 	me        int // index into peers[]
 	applyCh   chan ApplyMsg
+	readLease time.Time
 
 	// persistent state
 	votedFor    int32 // to prevent one follower vote for multi candidate, when then restart
@@ -158,9 +160,11 @@ func (rf *Raft) checkApply() {
 			rf.Unlock()
 			panic(rf.String())
 		}
+		entry := rf.log.At(rf.lastApplied)
 		msg := ApplyMsg{
 			Index:       rf.lastApplied,
-			Command:     rf.log.At(rf.lastApplied).Command,
+			Command:     entry.Command,
+			Term:        entry.Term,
 			UseSnapshot: false,
 			Snapshot:    []byte{},
 		}
@@ -290,10 +294,20 @@ func (rf *Raft) Kill() {
 	close(rf.shutdownCh)
 }
 
+// If lease is granted in this term, and later than the old one, extend the lease
+func (rf *Raft) UpdateReadLease(term int32, lease time.Time) {
+	rf.RLock()
+	defer rf.RUnlock()
+	if rf.currentTerm == term && lease.After(rf.readLease) {
+		rf.readLease = lease
+		glog.V(common.VDebug).Infof("Update read lease to %s", lease)
+	}
+}
+
 // Submit a command to raft
 // The command will be replicated to followers, then leader commmit, applied to the state machine by raftKV,
 // and finally response to the client
-func (rf *Raft) SubmitCommand(command interface{}) (index int, term int, isLeader bool) {
+func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int, isLeader bool) {
 	rf.Lock()
 	defer rf.Unlock()
 	if rf.role != leader {
@@ -301,6 +315,17 @@ func (rf *Raft) SubmitCommand(command interface{}) (index int, term int, isLeade
 	}
 	isLeader = true
 
+	if command.CmdType == common.CmdGet {
+		if time.Now().Before(rf.readLease) {
+			glog.V(common.VDebug).Infof("Get with lease read %s", command.String())
+			applyMsg := ApplyMsg{
+				Command: command,
+			}
+			rf.applyCh <- applyMsg
+			return
+		}
+	}
+	command.Timestamp = time.Now().UnixNano()
 	// append to local log
 	logEntry := LogEntry{
 		Term:    rf.currentTerm,

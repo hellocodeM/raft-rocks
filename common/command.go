@@ -1,9 +1,8 @@
-package raftkv
+package common
 
 import (
-	"fmt"
-
 	"encoding/gob"
+	"fmt"
 
 	"golang.org/x/net/trace"
 )
@@ -31,13 +30,15 @@ func (t KVCmdType) String() string {
 
 // command of the KV state machine
 type KVCommand struct {
-	CmdType  KVCmdType
-	Req      interface{}
-	Res      interface{}
-	ClientID int64
-	SN       int64
-	LogID    string
-	tracer   trace.Trace
+	CmdType KVCmdType
+	Req     interface{}
+	Res     interface{}
+
+	ClientID  int64
+	SN        int64
+	LogID     string
+	Timestamp int64
+	tracer    trace.Trace
 }
 
 func NewKVCommand(opType KVCmdType, req interface{}, res interface{}, clientID int64, SN int64, logID string) *KVCommand {
@@ -53,11 +54,21 @@ func NewKVCommand(opType KVCmdType, req interface{}, res interface{}, clientID i
 	return cmd
 }
 
-func (op *KVCommand) trace(format string, a ...interface{}) {
+func (op *KVCommand) String() string {
+	return fmt.Sprintf("<%d:%d:%s>", op.ClientID, op.SN, op.LogID)
+}
+
+func (op *KVCommand) Trace(format string, a ...interface{}) {
 	// if KVOp be replicated to follower, tracer will be nil
 	if op.tracer != nil {
 		msg := fmt.Sprintf(format, a...)
 		op.tracer.LazyPrintf(msg)
+	}
+}
+
+func (op *KVCommand) Finish() {
+	if op.tracer != nil {
+		op.tracer.Finish()
 	}
 }
 

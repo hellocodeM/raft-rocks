@@ -43,7 +43,7 @@ type RaftKV struct {
 	persister    *raft.Persister
 
 	store    KVStorage
-	waiting  map[*KVCommand]chan bool
+	waiting  map[*common.KVCommand]chan bool
 	clientSN map[int64]int64 // client SN should be incremental, otherwise the command will be ignored
 	clientID int64
 	logger   trace.EventLog
@@ -73,7 +73,7 @@ func hashCommand(clientID, SN int) int {
 // Command could be submit many times, it should be idempotent.
 // Command could be identified by <ClientID, SN>
 // one command could appear in multi log index, meanwhile on log index could represent multi command, the relationship is N to N.
-func (kv *RaftKV) waitFor(cmd *KVCommand) error {
+func (kv *RaftKV) waitFor(cmd *common.KVCommand) error {
 	kv.mu.Lock()
 	kv.waiting[cmd] = make(chan bool, 1)
 	kv.mu.Unlock()
@@ -90,7 +90,7 @@ func (kv *RaftKV) waitFor(cmd *KVCommand) error {
 	return err
 }
 
-func (kv *RaftKV) notify(cmd *KVCommand) {
+func (kv *RaftKV) notify(cmd *common.KVCommand) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	if ch, ok := kv.waiting[cmd]; ok {
@@ -99,16 +99,16 @@ func (kv *RaftKV) notify(cmd *KVCommand) {
 }
 
 func (kv *RaftKV) Get(args *common.GetArgs, reply *common.GetReply) error {
-	cmd := NewKVCommand(CmdGet, args, reply, args.ClientID, args.SN, args.LogID)
-	defer cmd.tracer.Finish()
-	cmd.trace("args: %+v", *args)
+	cmd := common.NewKVCommand(common.CmdGet, args, reply, args.ClientID, args.SN, args.LogID)
+	defer cmd.Finish()
+	cmd.Trace("args: %+v", *args)
 	return kv.submitCommand(cmd)
 }
 
 func (kv *RaftKV) Put(args *common.PutArgs, reply *common.PutReply) error {
-	cmd := NewKVCommand(CmdPut, args, reply, args.ClientID, args.SN, args.LogID)
-	defer cmd.tracer.Finish()
-	cmd.trace("args: %+v", *args)
+	cmd := common.NewKVCommand(common.CmdPut, args, reply, args.ClientID, args.SN, args.LogID)
+	defer cmd.Finish()
+	cmd.Trace("args: %+v", *args)
 	return kv.submitCommand(cmd)
 }
 
@@ -118,44 +118,51 @@ func (kv *RaftKV) OpenSession(args *common.OpenSessionArgs, reply *common.OpenSe
 	return nil
 }
 
-func (kv *RaftKV) submitCommand(cmd *KVCommand) error {
-	cmd.trace("Submit command to raft")
+func (kv *RaftKV) submitCommand(cmd *common.KVCommand) error {
+	cmd.Trace("Submit command to raft")
 	_, _, isLeader := kv.rf.SubmitCommand(cmd)
 	if !isLeader {
-		cmd.trace("peer<%d> not leader, finish this operation", kv.me)
+		cmd.Trace("peer<%d> not leader, finish this operation", kv.me)
 		return errNotLeader
 	}
 	err := kv.waitFor(cmd)
 	return err
 }
 
-func (kv *RaftKV) applyCommand(cmd *KVCommand) {
-	cmd.trace("Apply start: %+v", cmd)
+func (kv *RaftKV) applyCommand(msg raft.ApplyMsg) {
+	cmd := msg.Command
+	cmd.Trace("Apply start: %+v", cmd)
 
-	if cmd.CmdType != CmdGet && !kv.isUniqueSN(cmd.ClientID, cmd.SN) { // ignore duplicate command
-		cmd.trace("Dup command, ignore")
+	if cmd.CmdType != common.CmdGet && !kv.isUniqueSN(cmd.ClientID, cmd.SN) { // ignore duplicate command
+		cmd.Trace("Dup command, ignore")
 		return
 	}
 	switch cmd.CmdType {
-	case CmdGet:
+	case common.CmdGet:
 		req := cmd.Req.(*common.GetArgs)
 		res := cmd.Res.(*common.GetReply)
 		value, ok := kv.doGet(req.Key)
 		if ok {
 			res.Status = common.OK
 			res.Value = value
-			cmd.trace("Apply command, get key=%s,value=%s", req.Key, res.Value)
+			cmd.Trace("Apply command, get key=%s,value=%s", req.Key, res.Value)
 		} else {
 			res.Status = common.ErrNoKey
-			cmd.trace("Apply command, get key=%s,err=%s", req.Key, res.Status)
+			cmd.Trace("Apply command, get key=%s,err=%s", req.Key, res.Status)
 		}
-	case CmdPut:
+	case common.CmdPut:
 		req := cmd.Req.(*common.PutArgs)
 		res := cmd.Res.(*common.PutReply)
 		kv.doPut(req.Key, req.Value)
 		res.Status = common.OK
-		cmd.trace("Apply command, put key=%s,value=%s", req.Key, req.Value)
+		cmd.Trace("Apply command, put key=%s,value=%s", req.Key, req.Value)
+	case common.CmdNoop:
 	}
+	// update read lease
+	start := time.Unix(cmd.Timestamp/1E9, cmd.Timestamp%1E9)
+	start = start.Add(time.Second)
+	// TODO use flag
+	kv.rf.UpdateReadLease(msg.Term, start)
 }
 
 func (kv *RaftKV) applier() {
@@ -177,9 +184,8 @@ func (kv *RaftKV) applier() {
 					log.Println(kv.rf)
 					panic("Should not receive empty command")
 				}
-				cmd := msg.Command.(*KVCommand)
-				kv.applyCommand(cmd)
-				kv.notify(cmd)
+				kv.applyCommand(msg)
+				kv.notify(msg.Command)
 			}
 		case <-kv.stopCh:
 			return
@@ -250,7 +256,7 @@ func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister)
 	kv.clientSN = make(map[int64]int64)
 	kv.logger = trace.NewEventLog("RaftKV", fmt.Sprintf("peer<%d>", me))
 	kv.persister = persister
-	kv.waiting = make(map[*KVCommand]chan bool)
+	kv.waiting = make(map[*common.KVCommand]chan bool)
 
 	go kv.reporter()
 	go kv.applier()

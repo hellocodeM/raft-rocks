@@ -4,11 +4,13 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
+
+	"github.com/HelloCodeMing/raft-rocks/common"
 )
 
 type LogEntry struct {
 	Term    int32
-	Command interface{}
+	Command *common.KVCommand
 }
 
 type LogManager struct {
