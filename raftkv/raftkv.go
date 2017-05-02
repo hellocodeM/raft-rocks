@@ -2,7 +2,6 @@ package raftkv
 
 import (
 	"bytes"
-	"encoding/gob"
 	"errors"
 	"flag"
 	"fmt"
@@ -45,7 +44,8 @@ type RaftKV struct {
 
 	store    KVStorage
 	waiting  map[*KVCommand]chan bool
-	clientSN map[int]int // client SN should be incremental, otherwise the command will be ignored
+	clientSN map[int64]int64 // client SN should be incremental, otherwise the command will be ignored
+	clientID int64
 	logger   trace.EventLog
 }
 
@@ -57,7 +57,7 @@ func (kv *RaftKV) doPut(key string, value string) {
 	kv.store.Put(key, value)
 }
 
-func (kv *RaftKV) isUniqueSN(clientID int, SN int) bool {
+func (kv *RaftKV) isUniqueSN(clientID int64, SN int64) bool {
 	if SN <= kv.clientSN[clientID] {
 		return false
 	}
@@ -110,6 +110,12 @@ func (kv *RaftKV) Put(args *common.PutArgs, reply *common.PutReply) error {
 	return kv.submitCommand(cmd)
 }
 
+func (kv *RaftKV) OpenSession(args *common.OpenSessionArgs, reply *common.OpenSessionReply) error {
+	kv.clientID++
+	reply.ClientID = kv.clientID
+	return nil
+}
+
 func (kv *RaftKV) submitCommand(cmd *KVCommand) error {
 	cmd.trace("Submit command to raft")
 	_, _, isLeader := kv.rf.SubmitCommand(cmd)
@@ -136,18 +142,19 @@ func (kv *RaftKV) applyCommand(cmd *KVCommand) {
 		res := cmd.Res.(*common.GetReply)
 		value, ok := kv.doGet(req.Key)
 		if ok {
-			res.Err = common.OK
+			res.Status = common.OK
 			res.Value = value
+			cmd.trace("Apply command, get key=%s,value=%s", req.Key, res.Value)
 		} else {
-			res.Err = common.ErrNoKey
+			res.Status = common.ErrNoKey
+			cmd.trace("Apply command, get key=%s,err=%s", req.Key, res.Status)
 		}
-		cmd.trace("doGet: {k:%s, v:%s}", req.Key, res.Value)
 	case CmdPut:
 		req := cmd.Req.(*common.PutArgs)
 		res := cmd.Res.(*common.PutReply)
 		kv.doPut(req.Key, req.Value)
-		res.Err = common.OK
-		cmd.trace("doPut: {k:%s, v:%s}", req.Key, req.Value)
+		res.Status = common.OK
+		cmd.trace("Apply command, put key=%s,value=%s", req.Key, req.Value)
 	}
 }
 
@@ -206,53 +213,6 @@ func (kv *RaftKV) Kill() {
 	close(kv.stopCh)
 }
 
-// servers[] contains the ports of the set of
-// servers that will cooperate via Raft to
-// form the fault-tolerant key/value service.
-// me is the index of the current server in servers[].
-// the k/v server should store snapshots with persister.SaveSnapshot(),
-// and Raft should save its state (including log) with persister.SaveRaftState().
-// the k/v server should snapshot when Raft's saved state exceeds maxraftstate bytes,
-// in order to allow Raft to garbage-collect its log. if maxraftstate is -1,
-// you don't need to snapshot.
-// StartKVServer() must return quickly, so it should start goroutines
-// for any long-running work.
-//
-func StartKVServer(servers []*common.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *RaftKV {
-	// call gob.Register on structures you want
-	// Go's RPC library to marshall/unmarshall.
-	gob.Register(&KVCommand{})
-	gob.Register(&common.PutArgs{})
-	gob.Register(&common.PutReply{})
-	gob.Register(&common.GetArgs{})
-	gob.Register(&common.GetReply{})
-
-	kv := new(RaftKV)
-	kv.me = me
-	kv.maxRaftState = maxraftstate
-
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.stopCh = make(chan bool)
-	// TODO inject
-	kv.store = MakeMemKVStore()
-	kv.clientSN = make(map[int]int)
-	kv.logger = trace.NewEventLog("RaftKV", fmt.Sprintf("peer<%d>", me))
-	kv.persister = persister
-	kv.waiting = make(map[*KVCommand]chan bool)
-
-	go kv.reporter()
-	go kv.applier()
-
-	glog.Infoln("Creating RaftKV")
-	kv.rf = raft.NewRaft(servers, me, persister, kv.applyCh)
-	rpc.Register(kv.rf)
-	kv.rf.SetSnapshot(kv.snapshot)
-	kv.rf.SetMaxStateSize(maxraftstate)
-	glog.Infof("Created RaftKV, db: %v, clientDN: %v", kv.store, kv.clientSN)
-
-	return kv
-}
-
 // snapshot state to persister, callback by raft
 func (kv *RaftKV) snapshot(lastIndex int, lastTerm int32) {
 	glog.Infof("snapshot state to persister")
@@ -277,4 +237,29 @@ func (kv *RaftKV) takeSnapshot(snapshot *raft.Snapshot) {
 	defer kv.mu.Unlock()
 	// kv.db = snapshot.Db
 	kv.clientSN = snapshot.ClientSN
+}
+
+func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister) *RaftKV {
+	kv := new(RaftKV)
+	kv.me = me
+
+	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.stopCh = make(chan bool)
+	// TODO inject
+	kv.store = MakeMemKVStore()
+	kv.clientSN = make(map[int64]int64)
+	kv.logger = trace.NewEventLog("RaftKV", fmt.Sprintf("peer<%d>", me))
+	kv.persister = persister
+	kv.waiting = make(map[*KVCommand]chan bool)
+
+	go kv.reporter()
+	go kv.applier()
+
+	glog.Infoln("Creating RaftKV")
+	kv.rf = raft.NewRaft(servers, me, persister, kv.applyCh)
+	rpc.Register(kv.rf)
+	kv.rf.SetSnapshot(kv.snapshot)
+	glog.Infof("Created RaftKV, db: %v, clientDN: %v", kv.store, kv.clientSN)
+
+	return kv
 }

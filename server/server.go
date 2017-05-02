@@ -20,7 +20,6 @@ var (
 func init() {
 	flag.StringVar(&ServerAddr, "address", "localhost:10000", "address server listen to")
 	flag.StringVar(&Replicas, "replicas", "localhost:10000,localhost:10001,localhost:10002", "all replicas in raft group")
-	flag.IntVar(&SnapshotThreshold, "snapshot_threshold", 1024*1024, "when this threshold reached, do snapshot")
 }
 
 func main() {
@@ -41,7 +40,7 @@ func main() {
 		glog.Fatalf("replicas not contains the server itself,this=%s,replicas=%s", ServerAddr, Replicas)
 	}
 	// start server
-	raftkv := raftkv.StartKVServer(servers, me, raft.MakePersister(), SnapshotThreshold)
+	raftkv := raftkv.StartRaftKV(servers, me, raft.MakePersister())
 	server := common.MakeServerEnd(ServerAddr)
 	server.AddService(raftkv)
 	server.Serve()

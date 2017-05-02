@@ -3,6 +3,8 @@ package raftkv
 import (
 	"fmt"
 
+	"encoding/gob"
+
 	"golang.org/x/net/trace"
 )
 
@@ -11,28 +13,44 @@ type KVCmdType int8
 const (
 	CmdGet KVCmdType = iota
 	CmdPut
+	CmdNoop
 )
 
+func (t KVCmdType) String() string {
+	switch t {
+	case CmdGet:
+		return "RaftKV.Get"
+	case CmdPut:
+		return "RaftKV.Put"
+	case CmdNoop:
+		return "RaftKV.Noop"
+	default:
+		return "UnknownCommand"
+	}
+}
+
+// command of the KV state machine
 type KVCommand struct {
 	CmdType  KVCmdType
 	Req      interface{}
 	Res      interface{}
-	ClientID int
-	SN       int
+	ClientID int64
+	SN       int64
 	LogID    string
 	tracer   trace.Trace
 }
 
-func NewKVCommand(opType KVCmdType, req interface{}, res interface{}, clientID int, SN int, logID string) *KVCommand {
-	return &KVCommand{
+func NewKVCommand(opType KVCmdType, req interface{}, res interface{}, clientID int64, SN int64, logID string) *KVCommand {
+	cmd := &KVCommand{
 		CmdType:  opType,
 		Req:      req,
 		Res:      res,
 		ClientID: clientID,
 		SN:       SN,
-		tracer:   trace.New("RaftKV.Put", fmt.Sprintf("<%d:%d>", clientID, SN)),
 		LogID:    logID,
 	}
+	cmd.tracer = trace.New(opType.String(), fmt.Sprintf("%d:%d:%s", clientID, SN, logID))
+	return cmd
 }
 
 func (op *KVCommand) trace(format string, a ...interface{}) {
@@ -41,4 +59,8 @@ func (op *KVCommand) trace(format string, a ...interface{}) {
 		msg := fmt.Sprintf(format, a...)
 		op.tracer.LazyPrintf(msg)
 	}
+}
+
+func init() {
+	gob.Register(&KVCommand{})
 }

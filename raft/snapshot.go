@@ -15,7 +15,7 @@ const DumpRPCInstallSnapshotTracing = true
 
 type Snapshot struct {
 	Db                map[string]string
-	ClientSN          map[int]int
+	ClientSN          map[int64]int64
 	LastIncludedIndex int
 	LastIncludedTerm  int32
 }
@@ -66,9 +66,9 @@ func (session *installSnapshotSession) trace(format string, a ...interface{}) {
 }
 
 func (rf *Raft) sendInstallSnapshot(peer int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
-	ok := rf.peers[peer].Call("Raft.InstallSnapshot", args, reply)
+	err := rf.peers[peer].Call("Raft.InstallSnapshot", args, reply)
 	rf.checkNewTerm(int32(peer), reply.Term)
-	return ok
+	return err == nil
 }
 
 func (rf *Raft) notifySMTakeSnapshot() {

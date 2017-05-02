@@ -1,9 +1,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
-	"net/rpc"
+	"os"
 	"strings"
 	"time"
 
@@ -16,11 +17,13 @@ var (
 	RetryInterval time.Duration
 
 	// client actions
-	Putting  bool
-	Getting  bool
-	Key      string
-	Value    string
-	ClientID int
+	Putting bool
+	Getting bool
+	Key     string
+	Value   string
+
+	// errors
+	ErrUnavailableServer = errors.New("server unavailable")
 )
 
 func init() {
@@ -30,116 +33,127 @@ func init() {
 	flag.BoolVar(&Getting, "get", false, "get a key/value")
 	flag.StringVar(&Key, "key", "", "key")
 	flag.StringVar(&Value, "value", "", "value")
-	flag.IntVar(&ClientID, "client_id", 0, "client id")
 }
 
 // Clerk client implementation
 type Clerk struct {
 	serverAddrs []string
 	leader      int
+	client      *common.ClientEnd
 
-	clientID int
-	SN       int
+	clientID int64
+	SN       int64
 }
 
 // MakeClerk create a client
-func MakeClerk(servers []string) *Clerk {
+func MakeClerk(servers []string) (*Clerk, error) {
 	ck := new(Clerk)
 	ck.serverAddrs = servers
-	ck.clientID = ClientID
-	ck.logInfo("Created clerk, clientID:%d", ck.clientID)
-	return ck
+	if err := ck.openSession(); err != nil {
+		return nil, err
+	}
+	glog.Infof("Created clerk, clientID:%d", ck.clientID)
+	return ck, nil
 }
 
-func (ck *Clerk) logInfo(format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
-	glog.Infof(msg)
+func (ck *Clerk) openSession() error {
+	servers := ck.serverAddrs
+	for _, addr := range servers {
+		ck.client = common.MakeClientEnd(addr)
+		reply := &common.OpenSessionReply{}
+		err := ck.client.Call("RaftKV.OpenSession", &common.OpenSessionArgs{}, reply)
+		if err == nil && reply.Status == common.OK {
+			ck.clientID = reply.ClientID
+			return nil
+		}
+	}
+	return ErrUnavailableServer
+}
+
+func (ck *Clerk) closeSession() {
+	if ck.client != nil {
+		ck.client.Close()
+	}
+}
+
+func (ck *Clerk) genGetArgs(key string) *common.GetArgs {
+	ck.SN++
+	args := &common.GetArgs{Key: key}
+	args.ClientID = ck.clientID
+	args.LogID = common.GenLogID()
+	args.SN = ck.SN
+	return args
 }
 
 // Get get a key/value
 func (ck *Clerk) Get(key string) (string, bool) {
-	logID := common.GenLogID()
-	ck.SN++
-	ck.logInfo("%s Geting: {k:%s}", logID, key)
-	args := &common.GetArgs{Key: key, ClientID: ck.clientID, SN: ck.SN, LogID: logID}
-	reply := &common.GetReply{}
-	for r := 0; r < 10; r++ {
-		client, err := rpc.DialHTTP("tcp", ck.serverAddrs[ck.leader])
-		if err != nil {
-			glog.Warningf("Dial %s failed", ck.serverAddrs[ck.leader])
-			ck.rollLeader()
-			continue
-		}
-		err = client.Call("RaftKV.Get", &args, reply)
-		if err == nil && reply.Err == common.OK {
+	args := ck.genGetArgs(key)
+	glog.Infof("%s Getting: {k:%s}", args.LogID, key)
+	for r := 0; r < len(ck.serverAddrs); r++ {
+		reply := &common.GetReply{}
+		err := ck.client.Call("RaftKV.Get", &args, reply)
+		if err == nil && reply.Status == common.OK {
 			return reply.Value, true
+		} else if reply.Status == common.ErrNoKey {
+			return "", false
 		}
-		ck.handleError(err, reply.Err)
-	}
 
+		ck.handleError(err, reply.Status)
+	}
+	glog.Errorf("Try many times but failed")
 	return "", false
 }
 
-func (ck *Clerk) PutAppend(logID string, key string, value string, isAppend bool) {
+func (ck *Clerk) genPutArgs(key, value string) *common.PutArgs {
 	ck.SN++
-	args := common.PutArgs{
-		Key:      key,
-		Value:    value,
-		SN:       ck.SN,
-		ClientID: ck.clientID,
-		LogID:    logID,
+	args := &common.PutArgs{
+		Key:   key,
+		Value: value,
 	}
-	for r := 0; r < 10; r++ {
+	args.ClientID = ck.clientID
+	args.SN = ck.SN
+	args.LogID = common.GenLogID()
+	return args
+}
+
+func (ck *Clerk) Put(key, value string) {
+	args := ck.genPutArgs(key, value)
+	glog.Infof("%s Putting: {k:%s, v:%s}", args.LogID, key, value)
+	for r := 0; r < len(ck.serverAddrs); r++ {
 		reply := &common.PutReply{}
-		client, err := rpc.DialHTTP("tcp", ck.serverAddrs[ck.leader])
-		if err != nil {
-			glog.Warningf("Dial %s failed", ck.serverAddrs[ck.leader])
-			ck.rollLeader()
-			continue
-		}
-		err = client.Call("RaftKV.Put", &args, reply)
-		if err == nil && reply.Err == common.OK {
+		err := ck.client.Call("RaftKV.Put", &args, reply)
+		if err == nil && reply.Status == common.OK {
 			return
 		}
-		ck.handleError(err, reply.Err)
+		ck.handleError(err, reply.Status)
 	}
 }
 
 func (ck *Clerk) handleError(rpcErr error, err common.ClerkResult) {
 	if rpcErr != nil {
-		ck.logInfo("rpc error, try server: %d", ck.leader)
-	} else {
-		switch err {
-		case common.ErrNotLeader:
-			ck.logInfo("wrong leader")
-		case common.ErrTimeout:
-			ck.logInfo("operation timeout, maybe network partition")
-		case common.ErrNoKey:
-			ck.logInfo("no such key, maybe stale data")
-		default:
-			ck.logInfo("error is %s", err)
-		}
+		glog.Warning("rpc error %s", rpcErr)
+	} else if err != common.OK {
+		glog.Warning(err)
 	}
 	ck.rollLeader()
-	ck.logInfo("try server: %d", ck.leader)
+	glog.Warningf("try server: %d", ck.leader)
 	time.Sleep(RetryInterval)
 }
 
 func (ck *Clerk) rollLeader() {
 	ck.leader = (ck.leader + 1) % len(ck.serverAddrs)
-}
 
-func (ck *Clerk) Put(key string, value string) {
-	logID := common.GenLogID()
-	ck.logInfo("%s Puting: {k:%s, v:%s}", logID, key, value)
-	ck.PutAppend(logID, key, value, false)
-	ck.logInfo("%s Put to <%d> succeed, {k:%s, v:%s}", logID, ck.leader, key, value)
 }
 
 func main() {
 	flag.Parse()
 
-	clerk := MakeClerk(strings.Split(ServerAddrs, ","))
+	clerk, err := MakeClerk(strings.Split(ServerAddrs, ","))
+	if err != nil {
+		fmt.Println("Could not connect to any server")
+		os.Exit(1)
+	}
+	defer clerk.closeSession()
 	if Putting {
 		if Key != "" && Value != "" {
 			clerk.Put(Key, Value)

@@ -3,13 +3,12 @@ package raft
 import (
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
 	"sync"
 	"time"
-
-	"flag"
 
 	"github.com/HelloCodeMing/raft-rocks/common"
 	"github.com/golang/glog"
@@ -236,7 +235,7 @@ func (rf *Raft) makeTracer() {
 	rf.tracer = trace.NewEventLog("Raft", fmt.Sprintf("peer<%d,%d>", rf.me, rf.currentTerm))
 }
 
-//
+// NewRaft
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -295,29 +294,14 @@ func (raft *Raft) reporter() {
 	}
 }
 
-//
-// the tester calls Kill() when a Raft instance won't
-// be needed again. you are not required to do anything
-// in Kill(), but it might be convenient to (for example)
-// turn off debug output from this instance.
-//
 func (rf *Raft) Kill() {
 	rf.logInfo("Killing raft, wait for goroutines to quit")
 	close(rf.shutdownCh)
 }
 
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-//
+// Submit a command to raft
+// The command will be replicated to followers, then leader commmit, applied to the state machine by raftKV,
+// and finally response to the client
 func (rf *Raft) SubmitCommand(command interface{}) (index int, term int, isLeader bool) {
 	rf.Lock()
 	defer rf.Unlock()

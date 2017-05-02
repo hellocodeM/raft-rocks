@@ -107,9 +107,9 @@ func (rf *Raft) processRequestVote(session *RequestVoteSession) {
 }
 
 func (rf *Raft) sendRequestVote(peer int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[peer].Call("Raft.RequestVote", args, reply)
+	err := rf.peers[peer].Call("Raft.RequestVote", args, reply)
 	rf.checkNewTerm(int32(peer), reply.Term)
-	return ok
+	return err == nil
 }
 
 func (rf *Raft) requestingVote(votedCh chan<- bool) {

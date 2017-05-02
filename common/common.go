@@ -1,34 +1,45 @@
 package common
 
 import (
-	"fmt"
-	"math/rand"
+	"encoding/gob"
 )
 
+// To implement linearizable semantic
+type ArgsBase struct {
+	ClientID int64  // unique for each client
+	SN       int64  // unique serial number for each client
+	LogID    string // for tracing
+}
+
+// Create Session
+type OpenSessionArgs struct {
+}
+
+type OpenSessionReply struct {
+	Status   ClerkResult
+	ClientID int64
+}
+
+// Put(key, value)
 type PutArgs struct {
+	ArgsBase
 	Key   string
 	Value string
-
-	SN       int // unique serial number for each client
-	ClientID int // clientId for tracing
-	LogID    string
 }
 
 type PutReply struct {
-	Err ClerkResult
+	Status ClerkResult
 }
 
+// Value = Get(key)
 type GetArgs struct { // implements ClerkArgs
+	ArgsBase
 	Key string
-
-	SN       int
-	ClientID int
-	LogID    string
 }
 
 type GetReply struct {
-	Err   ClerkResult
-	Value string
+	Status ClerkResult
+	Value  string
 }
 
 type ClerkResult int8
@@ -55,6 +66,9 @@ func (error ClerkResult) String() string {
 	}
 }
 
-func GenLogID() string {
-	return fmt.Sprintf("<<<%d>>>", rand.Int())
+func init() {
+	gob.Register(&PutArgs{})
+	gob.Register(&PutReply{})
+	gob.Register(&GetArgs{})
+	gob.Register(&GetReply{})
 }

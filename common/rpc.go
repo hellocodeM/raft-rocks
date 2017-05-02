@@ -16,20 +16,19 @@ func MakeClientEnd(serverAddr string) *ClientEnd {
 	return &ClientEnd{serverAddr: serverAddr}
 }
 
-func (c *ClientEnd) Call(method string, args interface{}, reply interface{}) bool {
-	if c.client == nil {
-		client, err := rpc.DialHTTP("tcp", c.serverAddr)
-		if err != nil {
-			glog.Warningf("Failed to dial server %s", c.serverAddr)
-			return false
-		}
-		c.client = client
-		glog.Warningf("Connection could not be established, call %s failed", method)
+func (c *ClientEnd) Call(method string, args interface{}, reply interface{}) error {
+	var err error
+	c.client, err = rpc.DialHTTP("tcp", c.serverAddr)
+	if err != nil {
+		return err
 	}
-	return c.client.Call(method, args, reply) == nil
+	return c.client.Call(method, args, reply)
 }
 
-func (c *ClientEnd) connect() {
+func (c *ClientEnd) Close() {
+	if c.client != nil {
+		c.client.Close()
+	}
 }
 
 type ServerEnd struct {
@@ -46,7 +45,7 @@ func (s *ServerEnd) Serve() {
 	rpc.HandleHTTP()
 	err := http.ListenAndServe(s.addr, nil)
 	if err != nil {
-		panic(err)
+		glog.Fatal(err)
 	}
 }
 

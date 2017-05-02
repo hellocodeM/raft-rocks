@@ -67,10 +67,10 @@ func (session *AppendEntriesSession) finish() {
 }
 
 func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[peer].Call("Raft.AppendEntries", args, reply)
+	err := rf.peers[peer].Call("Raft.AppendEntries", args, reply)
 	rf.checkNewTerm(int32(peer), reply.Term)
 	rf.checkApply()
-	return ok
+	return err == nil
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
