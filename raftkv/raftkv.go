@@ -113,6 +113,8 @@ func (kv *RaftKV) Put(args *common.PutArgs, reply *common.PutReply) error {
 }
 
 func (kv *RaftKV) OpenSession(args *common.OpenSessionArgs, reply *common.OpenSessionReply) error {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	kv.clientID++
 	reply.ClientID = kv.clientID
 	return nil
