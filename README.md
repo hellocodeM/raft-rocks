@@ -1,2 +1,2 @@
 # raft-rocks
-A simple database based on raft and rocksdb
+A simple key/value store based on raft and rocksdb
