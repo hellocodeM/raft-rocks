@@ -131,7 +131,7 @@ func (ck *Clerk) Put(key, value string) {
 
 func (ck *Clerk) handleError(rpcErr error, err common.ClerkResult) {
 	if rpcErr != nil {
-		glog.Warning("rpc error %s", rpcErr)
+		glog.Warning("rpc error,error=", rpcErr)
 	} else if err != common.OK {
 		glog.Warning(err)
 	}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"sync"
+	"net/http"
 	"time"
 
 	"github.com/HelloCodeMing/raft-rocks/common"
@@ -19,6 +19,7 @@ var (
 
 func init() {
 	flag.BoolVar(&reportRaftState, "report_raft_state", false, "report raft state")
+	log.SetFlags(log.Lmicroseconds)
 }
 
 type ApplyMsg struct {
@@ -31,7 +32,6 @@ type ApplyMsg struct {
 
 // Raft A Go object implementing a single Raft peer.
 type Raft struct {
-	sync.RWMutex
 	peers     []*common.ClientEnd
 	persister *Persister
 	me        int // index into peers[]
@@ -90,11 +90,6 @@ func (rf *Raft) majority() int {
 }
 
 func (rf *Raft) String() string {
-	rf.RLock()
-	defer rf.RUnlock()
-	// return fmt.Sprintf(
-	// "raft{id: %d, role: %v, T: %d, voteFor: %d, lastIncluedIndex: %d, lastIncludedTerm: %d, log: %v}",
-	// rf.me, rf.role, rf.currentTerm, rf.votedFor, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log)
 	return "raft"
 }
 
@@ -111,7 +106,7 @@ func (rf *Raft) logInfo(format string, v ...interface{}) {
 // exists a new term
 func (rf *Raft) checkNewTerm(candidateID int32, newTerm int32) (beFollower bool) {
 	if rf.state.checkNewTerm(newTerm) {
-		glog.Infof("RuleForAll: find new term<%d,%d>, become follower", candidateID, newTerm)
+		glog.Infof("%s RuleForAll: find new term<%d,%d>, become follower", rf.stateString(), candidateID, newTerm)
 		rf.termChangedCh <- true
 		return true
 	}
@@ -140,7 +135,7 @@ func (rf *Raft) startStateMachine() {
 		default:
 		}
 		rf.makeTracer()
-		switch rf.state.role {
+		switch rf.state.Role {
 		case follower:
 			rf.doFollower()
 		case leader:
@@ -152,12 +147,72 @@ func (rf *Raft) startStateMachine() {
 }
 
 func (rf *Raft) makeTracer() {
-	rf.RLock()
-	defer rf.RUnlock()
 	if rf.tracer != nil {
 		rf.tracer.Finish()
 	}
 	rf.tracer = trace.NewEventLog("Raft", fmt.Sprintf("peer<%d,%d>", rf.me, rf.state.getTerm()))
+}
+
+func (raft *Raft) reporter() {
+	if !reportRaftState {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			raft.logInfo("Raft state: %v", raft)
+		case <-raft.shutdownCh:
+			return
+		}
+	}
+}
+
+func (rf *Raft) Kill() {
+	rf.logInfo("Killing raft, wait for goroutines to quit")
+	close(rf.shutdownCh)
+}
+
+func (rf *Raft) UpdateReadLease(term int32, lease time.Time) {
+	rf.state.updateReadLease(term, lease)
+}
+
+// Submit a command to raft
+// The command will be replicated to followers, then leader commmit, applied to the state machine by raftKV,
+// and finally response to the client
+func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int32, isLeader bool) {
+	term = rf.state.getTerm()
+	isLeader = rf.state.getRole() == leader
+	if !isLeader {
+		return -1, -1, false
+	}
+	isLeader = true
+
+	if command.CmdType == common.CmdGet {
+		if time.Now().Before(rf.state.readLease) {
+			glog.V(common.VDebug).Infof("Get with lease read %s", command.String())
+			applyMsg := ApplyMsg{
+				Command: command,
+			}
+			rf.applyCh <- applyMsg
+			return
+		}
+	}
+	command.Timestamp = time.Now().UnixNano()
+	// append to local log
+	logEntry := LogEntry{
+		Term:    term,
+		Command: command,
+	}
+	rf.log.Append(logEntry)
+	index = rf.log.LastIndex()
+
+	go func() {
+		rf.submitedCh <- index
+	}()
+	rf.logInfo("SubmitCommand by leader, {index: %d, command: %v}", index, command)
+	return
 }
 
 // NewRaft
@@ -198,72 +253,9 @@ func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh ch
 	go rf.startStateMachine()
 	// go rf.reporter()
 	// go rf.snapshoter()
+	http.HandleFunc("/raft", func(res http.ResponseWriter, req *http.Request) {
+		rf.state.dump(res)
+		req.Body.Close()
+	})
 	return rf
-}
-
-func (raft *Raft) reporter() {
-	if !reportRaftState {
-		return
-	}
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			raft.logInfo("Raft state: %v", raft)
-		case <-raft.shutdownCh:
-			return
-		}
-	}
-}
-
-func (rf *Raft) Kill() {
-	rf.logInfo("Killing raft, wait for goroutines to quit")
-	close(rf.shutdownCh)
-}
-
-func (rf *Raft) UpdateReadLease(term int32, lease time.Time) {
-	rf.state.updateReadLease(term, lease)
-}
-
-// Submit a command to raft
-// The command will be replicated to followers, then leader commmit, applied to the state machine by raftKV,
-// and finally response to the client
-func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int, isLeader bool) {
-	rf.state.Lock()
-	defer rf.state.Unlock()
-	if rf.state.role != leader {
-		return -1, -1, false
-	}
-	isLeader = true
-
-	if command.CmdType == common.CmdGet {
-		if time.Now().Before(rf.state.readLease) {
-			glog.V(common.VDebug).Infof("Get with lease read %s", command.String())
-			applyMsg := ApplyMsg{
-				Command: command,
-			}
-			rf.applyCh <- applyMsg
-			return
-		}
-	}
-	command.Timestamp = time.Now().UnixNano()
-	// append to local log
-	logEntry := LogEntry{
-		Term:    rf.state.currentTerm,
-		Command: command,
-	}
-	rf.log.Append(logEntry)
-	index = rf.log.LastIndex()
-	term = int(rf.state.currentTerm)
-
-	go func() {
-		rf.submitedCh <- index
-	}()
-	rf.logInfo("SubmitCommand by leader, {index: %d, command: %v}", index, command)
-	return
-}
-
-func init() {
-	log.SetFlags(log.Lmicroseconds)
 }

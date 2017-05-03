@@ -88,14 +88,12 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 		session.trace("receive heartbeat")
 	}
 
-	rf.state.Lock()
-	defer rf.state.Unlock()
 	if rf.lastIncludedIndex > rf.log.LastIndex() {
 		rf.logInfo("state: %v", rf)
 		rf.logInfo("args: %+v", args)
 		panic(fmt.Sprintf("lastIncludedIndex > lastLogIndex: %d>%d", rf.lastIncludedIndex, rf.log.LastIndex()))
 	}
-	term := rf.state.currentTerm
+	term := rf.state.getTerm()
 	reply.Term = term
 	reply.Success = false
 	if args.Term < term {

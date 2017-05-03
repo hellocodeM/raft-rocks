@@ -71,7 +71,7 @@ func (rf *Raft) processRequestVote(session *RequestVoteSession) {
 
 	rf.state.Lock()
 	defer rf.state.Unlock()
-	voteFor := rf.state.votedFor
+	voteFor := rf.state.VotedFor
 	voteForOk := voteFor == -1 || voteFor == args.CandidateID
 	var lastTerm int32
 	if rf.lastIncludedIndex < rf.log.LastIndex() {
@@ -81,15 +81,15 @@ func (rf *Raft) processRequestVote(session *RequestVoteSession) {
 	}
 	logOk := args.LastLogTerm > lastTerm || (args.LastLogTerm == lastTerm && args.LastLogIndex >= rf.log.LastIndex())
 
-	reply.Term = rf.state.currentTerm
-	if args.Term >= rf.state.currentTerm && voteForOk && logOk {
-		rf.state.becomeFollower(args.CandidateID, args.Term)
+	reply.Term = rf.state.CurrentTerm
+	if args.Term >= rf.state.CurrentTerm && voteForOk && logOk {
+		rf.state.becomeFollowerUnlocked(args.CandidateID, args.Term)
 		reply.VoteGranted = true
 		session.trace("GrantVote to candidate<%d,%d>", args.CandidateID, args.Term)
 	} else {
 		reply.VoteGranted = false
-		if args.Term < rf.state.currentTerm {
-			session.trace("Not grant vote to <%d,%d>, because term %d < %d", args.Term, rf.state.currentTerm)
+		if args.Term < rf.state.CurrentTerm {
+			session.trace("Not grant vote to <%d,%d>, because term %d < %d", args.Term, rf.state.CurrentTerm)
 		}
 		if !voteForOk {
 			session.trace("Not grant vote to <%d,%d>, because votedFor: %d", args.CandidateID, args.Term, voteFor)
