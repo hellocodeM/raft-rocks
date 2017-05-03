@@ -20,7 +20,7 @@ func (rf *Raft) doCandidate() {
 	// 1. voted by majority: succeed then quit
 	// 2. find a new leader: become a follower and quit.
 	// 3. timeout, enter next election
-	timeout := time.After(electionTO())
+	timeout := time.After(rf.electionTO())
 	for {
 		select {
 		case <-rf.termChangedCh:

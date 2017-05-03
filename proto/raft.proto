@@ -1,0 +1,44 @@
+syntax = "proto3";
+package pb;
+
+message AppendEntiresReq {
+}
+
+message AppendEntriesRes {
+}
+
+message RequestVoteReq {
+}
+
+message RequestVoteRes {
+}
+
+message GetReq {
+}
+
+message GetRes {
+}
+
+message PutReq {
+}
+
+message PutRes {
+}
+
+message OpenSessionReq {
+}
+
+message OpenSessionRes {
+    int64 clientID = 1;
+}
+
+service Raft {
+    rpc RequestVote(RequestVoteReq) returns (RequestVoteRes);
+    rpc AppendEntires(AppendEntiresReq) returns (AppendEntriesRes);
+}
+
+service RaftKV {
+    rpc OpenSession(OpenSessionReq) returns (OpenSessionRes);
+    rpc Put(PutReq) returns (PutRes);
+    rpc Get(GetReq) returns (GetRes);
+}

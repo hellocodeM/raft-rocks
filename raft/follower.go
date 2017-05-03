@@ -29,7 +29,7 @@ func (rf *Raft) doFollower() {
 			return
 		case <-rf.shutdownCh:
 			return
-		case <-time.After(electionTO()):
+		case <-time.After(rf.electionTO()):
 			rf.Lock()
 			rf.role = candidate
 			rf.votedFor = -1

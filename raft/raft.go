@@ -47,6 +47,7 @@ type Raft struct {
 
 	// volatile state on leaders, reinitialized after election
 	state *raftState
+	rand  *rand.Rand
 
 	// rpc channel
 	appendEntriesCh chan *AppendEntriesSession
@@ -158,8 +159,8 @@ func (rf *Raft) checkNewTerm(candidateID int32, newTerm int32) (beFollower bool)
 	return false
 }
 
-func electionTO() time.Duration {
-	return time.Duration(rand.Int63()%((electionTimeoutMax - electionTimeoutMin).Nanoseconds())) + electionTimeoutMin
+func (rf *Raft) electionTO() time.Duration {
+	return time.Duration(rf.rand.Int63()%((electionTimeoutMax - electionTimeoutMin).Nanoseconds())) + electionTimeoutMin
 }
 
 func (rf *Raft) foreachPeer(f func(peer int)) {
@@ -213,6 +214,7 @@ func (rf *Raft) makeTracer() {
 //
 func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := new(Raft)
+	rf.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me

@@ -5,6 +5,8 @@ import (
 	"log"
 	"time"
 
+	"github.com/golang/glog"
+
 	"flag"
 
 	"golang.org/x/net/trace"
@@ -58,7 +60,7 @@ func (session *RequestVoteSession) trace(format string, arg ...interface{}) {
 	}
 }
 
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error {
 	s := NewRequestVoteSession(rf.me, args, reply)
 	s.trace("args: %+v", *args)
 	reply.VoteGranted = false
@@ -66,6 +68,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	<-s.done
 	reply.Term = rf.currentTerm
 	s.tr.Finish()
+	return nil
 }
 
 func (rf *Raft) processRequestVote(session *RequestVoteSession) {
@@ -108,6 +111,9 @@ func (rf *Raft) processRequestVote(session *RequestVoteSession) {
 
 func (rf *Raft) sendRequestVote(peer int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	err := rf.peers[peer].Call("Raft.RequestVote", args, reply)
+	if err != nil {
+		glog.Warningf("Call peer<%d>'s Raft.RequestVote failed,error=%v", peer, err)
+	}
 	rf.checkNewTerm(int32(peer), reply.Term)
 	return err == nil
 }

@@ -72,7 +72,7 @@ func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *Appe
 	return err == nil
 }
 
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) error {
 	session := NewAppendEntriesSession(rf.me, rf.currentTerm, args, reply)
 	session.trace("args: %+v", *args)
 	reply.Success = false
@@ -80,6 +80,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	<-session.done
 	reply.Term = rf.currentTerm
 	session.finish()
+	return nil
 }
 
 func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
