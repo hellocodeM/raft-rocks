@@ -68,7 +68,7 @@ func (session *AppendEntriesSession) finish() {
 func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	err := rf.peers[peer].Call("Raft.AppendEntries", args, reply)
 	rf.checkNewTerm(int32(peer), reply.Term)
-	rf.checkApply()
+	rf.state.checkApply()
 	return err == nil
 }
 
@@ -125,13 +125,11 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 
 	if reply.Success {
 		lastNewEntry := args.PrevLogIndex + len(args.Entries)
-		if args.LeaderCommit > rf.commitIndex && lastNewEntry > rf.commitIndex {
-			rf.commitIndex = minInt(args.LeaderCommit, lastNewEntry)
-			session.trace("Follower update commitIndex: commitIndex: %d", rf.commitIndex)
+		if lastNewEntry > rf.state.getCommied() && rf.state.checkFollowerCommit(args.LeaderCommit) {
+			session.trace("Follower update commitIndex: commitIndex: %d", rf.state.getCommied())
 		}
 	}
 	rf.Unlock()
-	rf.checkApply()
 	session.done <- true
 }
 
@@ -142,8 +140,8 @@ func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 	rf.RLock()
 	isHeartBeat := false
 	lastIndex := rf.log.LastIndex()
-	index := rf.nextIndex[peer]
-	prevIndex := index - 1
+	toReplicate := rf.state.toReplicate(peer)
+	prevIndex := toReplicate - 1
 	var prevTerm int32
 	if prevIndex <= rf.lastIncludedIndex {
 		prevTerm = rf.lastIncludedTerm
@@ -156,14 +154,15 @@ func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 		LeaderID:     int32(rf.me),
 		PrevLogIndex: prevIndex,
 		PrevLogTerm:  prevTerm,
-		LeaderCommit: rf.commitIndex,
+		LeaderCommit: rf.state.getCommied(),
 	}
-	if rf.nextIndex[peer] <= lastIndex {
+	if toReplicate <= lastIndex {
 		// big step to mix up, small step when retreating
 		if atomic.LoadInt32(retreatCnt) > 0 {
-			args.Entries = rf.log.Slice(index, index+1)
+			args.Entries = rf.log.Slice(toReplicate, toReplicate+1)
 		} else {
-			args.Entries = rf.log.Slice(index, rf.log.Length())
+			args.Entries = rf.log.Slice(toReplicate, rf.log.Length())
+
 		}
 		isHeartBeat = false
 	} else {
@@ -174,38 +173,23 @@ func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 	reply := new(AppendEntriesReply)
 	ok := rf.sendAppendEntries(peer, args, reply)
 	if ok {
-		rf.Lock()
 		if reply.Success {
 			*retreatCnt = 1
 			atomic.StoreInt32(retreatCnt, 0)
 			if !isHeartBeat {
-				rf.matchIndex[peer] = maxInt(args.PrevLogIndex+len(args.Entries), rf.matchIndex[peer])
-				rf.nextIndex[peer] = args.PrevLogIndex + len(args.Entries) + 1
-				rf.logInfo("Replicate entry successfully, {peer:%d, index: %d, entries: %v}", peer, index, args.Entries)
+				rf.state.replicatedToPeer(peer, args.PrevLogIndex+len(args.Entries))
+				rf.logInfo("Replicate entry successfully, {peer:%d, index: %d, entries: %v}", peer, toReplicate, args.Entries)
 			}
 		} else {
-			rf.retreatForPeer(peer)
+			index := rf.state.retreatForPeer(peer)
 			*retreatCnt++
 			// *retreatCnt *= 2
 			// rf.nextIndex[peer] -= int(atomic.LoadInt32(retreatCnt))
 			// rf.nextIndex[peer] = maxInt(rf.nextIndex[peer], rf.lastIncludedIndex+1)
-			rf.logInfo("Replicate to %d fail due to log inconsistency, retreat to %d", peer, rf.nextIndex[peer])
+			rf.logInfo("Replicate to %d fail due to log inconsistency, retreat to %d", peer, index)
 		}
-		rf.Unlock()
 	} else {
 		rf.logInfo("Replicate to %d fail due to rpc failure, retry", peer)
 	}
 	return
-}
-
-func (rf *Raft) retreatForPeer(peer int) {
-	idx := &rf.nextIndex[peer]
-	*idx = minInt(*idx, rf.log.LastIndex())
-	if *idx > rf.lastIncludedIndex {
-		oldTerm := rf.log.At(*idx).Term
-		for *idx > rf.lastIncludedIndex+1 && rf.log.At(*idx).Term == oldTerm {
-			*idx--
-		}
-	}
-	*idx = maxInt(*idx, rf.lastIncludedIndex+1)
 }

@@ -1,12 +1,10 @@
 package raft
 
 import (
-	"bytes"
 	"encoding/gob"
 	"fmt"
 	"io"
 	"log"
-	"time"
 
 	"golang.org/x/net/trace"
 )
@@ -83,7 +81,7 @@ func (rf *Raft) notifySMTakeSnapshot() {
 		Snapshot:    rf.persister.ReadSnapshot(),
 	}
 	rf.applyCh <- msg
-	rf.lastApplied = rf.lastIncludedIndex
+	// rf.lastApplied = rf.lastIncludedIndex
 }
 
 // InstallSnapshot raft InstallSnapshot RPC
@@ -127,28 +125,30 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	// retain log entry following the snapshot
 	// discard log
 	// reset state machine using snapshot
-	if args.Done {
-		session.trace("Before snapshot raft state size: %d", rf.persister.RaftStateSize())
-		reply.Success = true
-		rf.lastIncludedIndex = args.LastIncludedIndex
-		rf.lastIncludedTerm = args.LastIncludedTerm
-		rf.persister.SaveSnapshot(args.Chunk)
-		rf.notifySMTakeSnapshot()
-		rf.log.DiscardUntil(args.LastIncludedIndex)
-		rf.commitIndex = maxInt(args.LastIncludedIndex, rf.commitIndex)
-		rf.persist()
+	/*
+		if args.Done {
+			session.trace("Before snapshot raft state size: %d", rf.persister.RaftStateSize())
+			reply.Success = true
+			rf.lastIncludedIndex = args.LastIncludedIndex
+			rf.lastIncludedTerm = args.LastIncludedTerm
+			rf.persister.SaveSnapshot(args.Chunk)
+			rf.notifySMTakeSnapshot()
+			rf.log.DiscardUntil(args.LastIncludedIndex)
+			rf.commitIndex = maxInt(args.LastIncludedIndex, rf.commitIndex)
+			rf.persist()
 
-		session.trace("After snapshot state become: {lastApplied: %d, commitIndex: %d}", rf.lastApplied, rf.commitIndex)
-		session.trace("After snapshot raft state size: %d", rf.persister.RaftStateSize())
+			session.trace("After snapshot state become: {lastApplied: %d, commitIndex: %d}", rf.lastApplied, rf.commitIndex)
+			session.trace("After snapshot raft state size: %d", rf.persister.RaftStateSize())
 
-		// check
-		for i := rf.lastApplied + 1; i < rf.log.Length(); i++ {
-			if rf.log.At(i).Command == nil {
-				log.Println(rf)
-				log.Fatalf("After snapshot log should not contains empty command")
+			// check
+			for i := rf.lastApplied + 1; i < rf.log.Length(); i++ {
+				if rf.log.At(i).Command == nil {
+					log.Println(rf)
+					log.Fatalf("After snapshot log should not contains empty command")
+				}
 			}
 		}
-	}
+	*/
 }
 
 func (rf *Raft) sendSnapshotTo(peer int) (fastRetry bool) {
@@ -168,50 +168,53 @@ func (rf *Raft) sendSnapshotTo(peer int) (fastRetry bool) {
 	reply := InstallSnapshotReply{}
 	if rf.sendInstallSnapshot(peer, &args, &reply) && reply.Success {
 		rf.Lock()
-		rf.matchIndex[peer] = maxInt(rf.lastIncludedIndex, rf.matchIndex[peer])
-		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+		// rf.matchIndex[peer] = maxInt(rf.lastIncludedIndex, rf.matchIndex[peer])
+		// rf.nextIndex[peer] = rf.matchIndex[peer] + 1
 		rf.Unlock()
-		rf.logInfo("Update peer<%d> state: {matchIndex: %d, nextIndex: %d}", peer, rf.matchIndex[peer], rf.nextIndex[peer])
+		// rf.logInfo("Update peer<%d> state: {matchIndex: %d, nextIndex: %d}", peer, rf.matchIndex[peer], rf.nextIndex[peer])
 	}
 	return false
 }
 
 func (rf *Raft) snapshoter() {
-	rf.logInfo("Snapshoter start")
-	defer rf.logInfo("Snapshoter quit")
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-rf.shutdownCh:
-			return
-		case <-ticker.C:
-			rf.checkIfNeededSnapshot()
+	/*
+		rf.logInfo("Snapshoter start")
+		defer rf.logInfo("Snapshoter quit")
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-rf.shutdownCh:
+				return
+			case <-ticker.C:
+				rf.checkIfNeededSnapshot()
+			}
 		}
-	}
+	*/
 }
 
+/*
 func (rf *Raft) checkIfNeededSnapshot() {
 	if rf.maxStateSize == 0 || rf.maxStateSize == -1 || rf.snapshotCB == nil {
 		return
 	}
 	rf.Lock()
 	defer rf.Unlock()
-	if rf.persister.RaftStateSize() >= rf.maxStateSize && rf.lastApplied > rf.lastIncludedIndex {
-		rf.logInfo("CheckIfNeededSnapshot: raft state too large %d > %d", rf.persister.RaftStateSize(), rf.maxStateSize)
-		rf.lastIncludedIndex = rf.lastApplied
-		rf.lastIncludedTerm = rf.log.At(rf.lastApplied).Term
-		rf.snapshotCB(rf.lastIncludedIndex, rf.lastIncludedTerm)
-		rf.log.DiscardUntil(rf.lastIncludedIndex)
-		rf.persist()
-		if rf.role == leader {
-			for i := 0; i < len(rf.peers); i++ {
-				rf.nextIndex[i] = maxInt(rf.nextIndex[i], rf.lastIncludedIndex+1)
+		if rf.persister.RaftStateSize() >= rf.maxStateSize && rf.lastApplied > rf.lastIncludedIndex {
+			rf.logInfo("CheckIfNeededSnapshot: raft state too large %d > %d", rf.persister.RaftStateSize(), rf.maxStateSize)
+			rf.lastIncludedIndex = rf.lastApplied
+			rf.lastIncludedTerm = rf.log.At(rf.lastApplied).Term
+			rf.snapshotCB(rf.lastIncludedIndex, rf.lastIncludedTerm)
+			rf.log.DiscardUntil(rf.lastIncludedIndex)
+			rf.persist()
+			if rf.role == leader {
+				for i := 0; i < len(rf.peers); i++ {
+					// rf.nextIndex[i] = maxInt(rf.nextIndex[i], rf.lastIncludedIndex+1)
+				}
 			}
+			// rf.logInfo("Snapshot state and discard log: {lastIncludedIndex: %d, lastIncludedTerm: %d, nextIndex: %v}",
+			// rf.lastIncludedIndex, rf.lastIncludedTerm, rf.nextIndex)
 		}
-		rf.logInfo("Snapshot state and discard log: {lastIncludedIndex: %d, lastIncludedTerm: %d, nextIndex: %v}",
-			rf.lastIncludedIndex, rf.lastIncludedTerm, rf.nextIndex)
-	}
 }
 
 func (rf *Raft) recoverSnapshot() {
@@ -229,3 +232,5 @@ func (rf *Raft) recoverSnapshot() {
 		rf.notifySMTakeSnapshot()
 	}
 }
+
+*/

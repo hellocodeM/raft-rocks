@@ -45,13 +45,8 @@ type Raft struct {
 	currentTerm int32
 	log         *LogManager
 
-	// volatile state
-	commitIndex int // index of highest log entry known to be committed
-	lastApplied int // index of highest log entry applied to state machine
-
 	// volatile state on leaders, reinitialized after election
-	nextIndex  []int // for each server, index of the next log entry to send to that server
-	matchIndex []int // replicated entry index
+	state *raftState
 
 	// rpc channel
 	appendEntriesCh chan *AppendEntriesSession
@@ -59,10 +54,11 @@ type Raft struct {
 	snapshotCh      chan *installSnapshotSession
 
 	// additional state
-	role          raftRole
+	role raftRole
+	// once submit a command, send lastLogIndex into this chan,
+	// the replicator will try best replicate all logEntries until lastLogIndex
+	submitedCh    chan int
 	termChangedCh chan bool
-	submitCh      chan bool // trigger replicator
-	commitCh      chan bool // trigger commiter
 	shutdownCh    chan bool // shutdown all components
 
 	// snapshot state
@@ -134,8 +130,8 @@ func (rf *Raft) String() string {
 	rf.RLock()
 	defer rf.RUnlock()
 	return fmt.Sprintf(
-		"raft{id: %d, role: %v, T: %d, voteFor: %d, commitIndex: %d, applied: %d, lastIncluedIndex: %d, lastIncludedTerm: %d, log: %v, nextIndex: %v}",
-		rf.me, rf.role, rf.currentTerm, rf.votedFor, rf.commitIndex, rf.lastApplied, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log, rf.nextIndex)
+		"raft{id: %d, role: %v, T: %d, voteFor: %d, lastIncluedIndex: %d, lastIncludedTerm: %d, log: %v}",
+		rf.me, rf.role, rf.currentTerm, rf.votedFor, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log)
 }
 
 func (rf *Raft) stateString() string {
@@ -147,32 +143,6 @@ func (rf *Raft) logInfo(format string, v ...interface{}) {
 	n := len(rf.peers) + 1
 	rf.tracer.Printf(s)
 	glog.V(common.VDebug).Infof("<%*d,%*d>: %s", rf.me+1, rf.me, n-rf.me-1, rf.currentTerm, s)
-}
-
-// any command to apply
-func (rf *Raft) checkApply() {
-	rf.Lock()
-	defer rf.Unlock()
-	old := rf.lastApplied
-	for rf.commitIndex > rf.lastApplied {
-		rf.lastApplied++
-		if rf.log.LastIndex() < rf.lastApplied {
-			rf.Unlock()
-			panic(rf.String())
-		}
-		entry := rf.log.At(rf.lastApplied)
-		msg := ApplyMsg{
-			Index:       rf.lastApplied,
-			Command:     entry.Command,
-			Term:        entry.Term,
-			UseSnapshot: false,
-			Snapshot:    []byte{},
-		}
-		rf.applyCh <- msg
-	}
-	if rf.lastApplied > old {
-		rf.logInfo("Applyed commands until index=%d", rf.lastApplied)
-	}
 }
 
 // exists a new term
@@ -252,18 +222,17 @@ func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh ch
 	rf.currentTerm = 0
 	rf.log = NewLogManager()
 	rf.role = follower
-	rf.commitIndex = 0
-	rf.lastApplied = 0
 	rf.requestVoteChan = make(chan *RequestVoteSession)
 	rf.appendEntriesCh = make(chan *AppendEntriesSession)
 	rf.snapshotCh = make(chan *installSnapshotSession)
 	rf.shutdownCh = make(chan bool)
 	rf.termChangedCh = make(chan bool, 1)
+	rf.state = makeRaftState(rf, len(peers), me)
 	rf.makeTracer()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	rf.recoverSnapshot()
+	// rf.recoverSnapshot()
 
 	rf.logInfo("Created raft instance: %s", rf.String())
 
@@ -296,8 +265,8 @@ func (rf *Raft) Kill() {
 
 // If lease is granted in this term, and later than the old one, extend the lease
 func (rf *Raft) UpdateReadLease(term int32, lease time.Time) {
-	rf.RLock()
-	defer rf.RUnlock()
+	// rf.RLock()
+	// defer rf.RUnlock()
 	if rf.currentTerm == term && lease.After(rf.readLease) {
 		rf.readLease = lease
 		glog.V(common.VDebug).Infof("Update read lease to %s", lease)
@@ -334,14 +303,12 @@ func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int, i
 	rf.log.Append(logEntry)
 	index = rf.log.LastIndex()
 	term = int(rf.currentTerm)
-	rf.matchIndex[rf.me] = index
 	rf.persist()
 
+	go func() {
+		rf.submitedCh <- index
+	}()
 	rf.logInfo("SubmitCommand by leader, {index: %d, command: %v}", index, command)
-	rf.submitCh <- true
-	if len(rf.peers) == 1 {
-		rf.commitCh <- true
-	}
 	return
 }
 
