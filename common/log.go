@@ -16,5 +16,5 @@ const (
 // GenLogID generate a unique log id for tracing
 func GenLogID() string {
 	random := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return fmt.Sprintf("<<<%4d>>>", random.Int()%1E4)
+	return fmt.Sprintf("LogID<%4d>", random.Int()%1E4)
 }

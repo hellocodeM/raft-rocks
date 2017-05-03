@@ -26,8 +26,9 @@ func (rf *Raft) doLeader() {
 		glog.Infof("%s Leader quit.", rf.stateString())
 	}()
 
-	for peer, peerCh := range peerChs {
-		go rf.replicator(peer, peerCh)
+	for peer := range peerChs {
+		peerChs[peer] = make(chan struct{})
+		go rf.replicator(peer, peerChs[peer])
 	}
 
 	for {
@@ -40,14 +41,14 @@ func (rf *Raft) doLeader() {
 			rf.processAppendEntries(s)
 		case s := <-rf.requestVoteChan:
 			rf.processRequestVote(s)
-		case <-rf.snapshotCh:
-			panic("not implemented")
 		case <-rf.submitedCh:
 			drainOut(rf.submitedCh)
 			// fan-out to each peer
 			for _, peerCh := range peerChs {
 				peerCh <- struct{}{}
 			}
+		case <-rf.snapshotCh:
+			panic("not implemented")
 		}
 	}
 }
@@ -64,8 +65,12 @@ func drainOut(ch <-chan int) {
 
 // replicator: trigger by peerCh, replicate log until nextIndex to each peer
 func (rf *Raft) replicator(peer int, lastIndexCh <-chan struct{}) {
-	glog.V(common.VDebug).Infof("Relicator for peer<%d>", peer)
-	defer glog.V(common.VDebug).Infof("Relicator of peer<%d> quit", peer)
+	glog.V(common.VDebug).Infof("%s Replicator for peer<%d>", rf.stateString(), peer)
+	defer glog.V(common.VDebug).Infof("Replicator of peer<%d> quit", peer)
+	if peer == rf.me {
+		rf.localReplicator(lastIndexCh)
+		return
+	}
 	var retreatCnt int32
 	for {
 		select {
@@ -73,13 +78,22 @@ func (rf *Raft) replicator(peer int, lastIndexCh <-chan struct{}) {
 			if !more {
 				return
 			}
+			glog.V(common.VDebug).Infof("%s Replicate log to peer<%d>", rf.stateString(), peer)
 		case <-time.After(heartbeatTO):
+			glog.V(common.VDebug).Infof("%s Send heartbeat to peer<%d>", rf.stateString(), peer)
 		}
-		// TODO divided into localReplicator and remoteReplicator
-		if peer != rf.me {
-			rf.replicateLog(peer, &retreatCnt)
-		} else {
-			rf.state.replicatedToPeer(peer, rf.log.LastIndex())
+		rf.replicateLog(peer, &retreatCnt)
+	}
+}
+
+func (rf *Raft) localReplicator(lastIndexCh <-chan struct{}) {
+	for {
+		select {
+		case _, more := <-lastIndexCh:
+			if !more {
+				return
+			}
 		}
+		rf.state.replicatedToPeer(rf.me, rf.log.LastIndex())
 	}
 }

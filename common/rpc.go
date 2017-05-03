@@ -18,11 +18,18 @@ func MakeClientEnd(serverAddr string) *ClientEnd {
 
 func (c *ClientEnd) Call(method string, args interface{}, reply interface{}) error {
 	var err error
-	c.client, err = rpc.DialHTTP("tcp", c.serverAddr)
-	if err != nil {
-		return err
+	if c.client == nil {
+		c.client, err = rpc.DialHTTP("tcp", c.serverAddr)
+		if err != nil {
+			return err
+		}
 	}
-	return c.client.Call(method, args, reply)
+	err = c.client.Call(method, args, reply)
+	if err != nil {
+		glog.Warning(err)
+		c.client = nil
+	}
+	return err
 }
 
 func (c *ClientEnd) Close() {

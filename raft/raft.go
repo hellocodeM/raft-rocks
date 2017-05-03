@@ -1,8 +1,6 @@
 package raft
 
 import (
-	"bytes"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"log"
@@ -37,25 +35,21 @@ type Raft struct {
 	peers     []*common.ClientEnd
 	persister *Persister
 	me        int // index into peers[]
-	applyCh   chan ApplyMsg
-	readLease time.Time
 
 	// persistent state
-	votedFor    int32 // to prevent one follower vote for multi candidate, when then restart
-	currentTerm int32
-	log         *LogManager
+	log *LogManager
 
 	// volatile state on leaders, reinitialized after election
 	state *raftState
 	rand  *rand.Rand
 
+	// raft send apply message to RaftKV
+	applyCh chan ApplyMsg
 	// rpc channel
 	appendEntriesCh chan *AppendEntriesSession
 	requestVoteChan chan *RequestVoteSession
 	snapshotCh      chan *installSnapshotSession
 
-	// additional state
-	role raftRole
 	// once submit a command, send lastLogIndex into this chan,
 	// the replicator will try best replicate all logEntries until lastLogIndex
 	submitedCh    chan int
@@ -63,8 +57,6 @@ type Raft struct {
 	shutdownCh    chan bool // shutdown all components
 
 	// snapshot state
-	snapshotCB        func(int, int32) // call kvserver to snapshot state to persister
-	maxStateSize      int
 	lastIncludedIndex int // snapshotted log index
 	lastIncludedTerm  int32
 
@@ -93,36 +85,6 @@ func (role raftRole) String() string {
 	}
 }
 
-//
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-//
-func (rf *Raft) persist() {
-	buff := new(bytes.Buffer)
-	err := binary.Write(buff, binary.LittleEndian, rf.votedFor)
-	err = binary.Write(buff, binary.LittleEndian, rf.currentTerm)
-	err = rf.log.Encode(buff)
-	if err != nil {
-		log.Fatal(err)
-	}
-	rf.persister.SaveRaftState(buff.Bytes())
-}
-
-// restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	if len(data) == 0 {
-		return
-	}
-	buff := bytes.NewBuffer(data)
-	err1 := binary.Read(buff, binary.LittleEndian, &rf.votedFor)
-	err2 := binary.Read(buff, binary.LittleEndian, &rf.currentTerm)
-	err3 := rf.log.Decode(buff)
-	if err1 != nil || err2 != nil || err3 != nil {
-		panic("read state failed")
-	}
-}
-
 func (rf *Raft) majority() int {
 	return len(rf.peers)/2 + 1
 }
@@ -130,29 +92,26 @@ func (rf *Raft) majority() int {
 func (rf *Raft) String() string {
 	rf.RLock()
 	defer rf.RUnlock()
-	return fmt.Sprintf(
-		"raft{id: %d, role: %v, T: %d, voteFor: %d, lastIncluedIndex: %d, lastIncludedTerm: %d, log: %v}",
-		rf.me, rf.role, rf.currentTerm, rf.votedFor, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log)
+	// return fmt.Sprintf(
+	// "raft{id: %d, role: %v, T: %d, voteFor: %d, lastIncluedIndex: %d, lastIncludedTerm: %d, log: %v}",
+	// rf.me, rf.role, rf.currentTerm, rf.votedFor, rf.lastIncludedIndex, rf.lastIncludedTerm, rf.log)
+	return "raft"
 }
 
 func (rf *Raft) stateString() string {
-	return fmt.Sprintf("<%d:%d>", rf.me, rf.currentTerm)
+	return rf.state.String()
 }
 
 func (rf *Raft) logInfo(format string, v ...interface{}) {
 	s := fmt.Sprintf(format, v...)
-	n := len(rf.peers) + 1
 	rf.tracer.Printf(s)
-	glog.V(common.VDebug).Infof("<%*d,%*d>: %s", rf.me+1, rf.me, n-rf.me-1, rf.currentTerm, s)
+	glog.V(common.VDebug).Infof("%s %s", rf.stateString(), s)
 }
 
 // exists a new term
 func (rf *Raft) checkNewTerm(candidateID int32, newTerm int32) (beFollower bool) {
-	rf.Lock()
-	defer rf.Unlock()
-	if newTerm > rf.currentTerm {
-		rf.logInfo("RuleForAll: find new term<%d,%d>, become follower", candidateID, newTerm)
-		rf.beFollower(-1, newTerm)
+	if rf.state.checkNewTerm(newTerm) {
+		glog.Infof("RuleForAll: find new term<%d,%d>, become follower", candidateID, newTerm)
 		rf.termChangedCh <- true
 		return true
 	}
@@ -181,7 +140,7 @@ func (rf *Raft) startStateMachine() {
 		default:
 		}
 		rf.makeTracer()
-		switch rf.role {
+		switch rf.state.role {
 		case follower:
 			rf.doFollower()
 		case leader:
@@ -198,7 +157,7 @@ func (rf *Raft) makeTracer() {
 	if rf.tracer != nil {
 		rf.tracer.Finish()
 	}
-	rf.tracer = trace.NewEventLog("Raft", fmt.Sprintf("peer<%d,%d>", rf.me, rf.currentTerm))
+	rf.tracer = trace.NewEventLog("Raft", fmt.Sprintf("peer<%d,%d>", rf.me, rf.state.getTerm()))
 }
 
 // NewRaft
@@ -220,26 +179,24 @@ func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh ch
 	rf.me = me
 	rf.applyCh = applyCh
 
-	rf.votedFor = -1
-	rf.currentTerm = 0
 	rf.log = NewLogManager()
-	rf.role = follower
 	rf.requestVoteChan = make(chan *RequestVoteSession)
 	rf.appendEntriesCh = make(chan *AppendEntriesSession)
 	rf.snapshotCh = make(chan *installSnapshotSession)
 	rf.shutdownCh = make(chan bool)
 	rf.termChangedCh = make(chan bool, 1)
+	rf.submitedCh = make(chan int, 10)
 	rf.state = makeRaftState(rf, len(peers), me)
 	rf.makeTracer()
 
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	rf.state.readPersist(persister.ReadRaftState())
 	// rf.recoverSnapshot()
 
-	rf.logInfo("Created raft instance: %s", rf.String())
+	glog.Infof("%s Created raft instance: %s", rf.stateString(), rf.String())
 
 	go rf.startStateMachine()
-	go rf.reporter()
+	// go rf.reporter()
 	// go rf.snapshoter()
 	return rf
 }
@@ -265,29 +222,23 @@ func (rf *Raft) Kill() {
 	close(rf.shutdownCh)
 }
 
-// If lease is granted in this term, and later than the old one, extend the lease
 func (rf *Raft) UpdateReadLease(term int32, lease time.Time) {
-	// rf.RLock()
-	// defer rf.RUnlock()
-	if rf.currentTerm == term && lease.After(rf.readLease) {
-		rf.readLease = lease
-		glog.V(common.VDebug).Infof("Update read lease to %s", lease)
-	}
+	rf.state.updateReadLease(term, lease)
 }
 
 // Submit a command to raft
 // The command will be replicated to followers, then leader commmit, applied to the state machine by raftKV,
 // and finally response to the client
 func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int, isLeader bool) {
-	rf.Lock()
-	defer rf.Unlock()
-	if rf.role != leader {
+	rf.state.Lock()
+	defer rf.state.Unlock()
+	if rf.state.role != leader {
 		return -1, -1, false
 	}
 	isLeader = true
 
 	if command.CmdType == common.CmdGet {
-		if time.Now().Before(rf.readLease) {
+		if time.Now().Before(rf.state.readLease) {
 			glog.V(common.VDebug).Infof("Get with lease read %s", command.String())
 			applyMsg := ApplyMsg{
 				Command: command,
@@ -299,13 +250,12 @@ func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int, i
 	command.Timestamp = time.Now().UnixNano()
 	// append to local log
 	logEntry := LogEntry{
-		Term:    rf.currentTerm,
+		Term:    rf.state.currentTerm,
 		Command: command,
 	}
 	rf.log.Append(logEntry)
 	index = rf.log.LastIndex()
-	term = int(rf.currentTerm)
-	rf.persist()
+	term = int(rf.state.currentTerm)
 
 	go func() {
 		rf.submitedCh <- index
@@ -314,24 +264,6 @@ func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int, i
 	return
 }
 
-// return currentTerm and whether this server, currentLeader
-// believes it is the leader.
-func (rf *Raft) GetState() (currentTerm int, isLeader bool) {
-	rf.RLock()
-	defer rf.RUnlock()
-	currentTerm = int(rf.currentTerm)
-	isLeader = rf.role == leader
-	return
-}
-
 func init() {
 	log.SetFlags(log.Lmicroseconds)
-}
-
-func (rf *Raft) SetSnapshot(snapshotCB func(int, int32)) {
-	rf.snapshotCB = snapshotCB
-}
-
-func (rf *Raft) SetMaxStateSize(size int) {
-	rf.maxStateSize = size
 }

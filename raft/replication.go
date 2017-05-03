@@ -1,12 +1,11 @@
 package raft
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"sync/atomic"
 	"time"
-
-	"flag"
 
 	"golang.org/x/net/trace"
 )
@@ -68,17 +67,15 @@ func (session *AppendEntriesSession) finish() {
 func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	err := rf.peers[peer].Call("Raft.AppendEntries", args, reply)
 	rf.checkNewTerm(int32(peer), reply.Term)
-	rf.state.checkApply()
 	return err == nil
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) error {
-	session := NewAppendEntriesSession(rf.me, rf.currentTerm, args, reply)
+	session := NewAppendEntriesSession(rf.me, rf.state.getTerm(), args, reply)
 	session.trace("args: %+v", *args)
 	reply.Success = false
 	rf.appendEntriesCh <- session
 	<-session.done
-	reply.Term = rf.currentTerm
 	session.finish()
 	return nil
 }
@@ -91,24 +88,25 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 		session.trace("receive heartbeat")
 	}
 
-	rf.Lock()
+	rf.state.Lock()
+	defer rf.state.Unlock()
 	if rf.lastIncludedIndex > rf.log.LastIndex() {
-		rf.Unlock()
 		rf.logInfo("state: %v", rf)
 		rf.logInfo("args: %+v", args)
 		panic(fmt.Sprintf("lastIncludedIndex > lastLogIndex: %d>%d", rf.lastIncludedIndex, rf.log.LastIndex()))
 	}
-	reply.Term = rf.currentTerm
+	term := rf.state.currentTerm
+	reply.Term = term
 	reply.Success = false
-	if args.Term < rf.currentTerm {
-		session.trace("Reject due to term: %d<%d", args.Term, rf.currentTerm)
+	if args.Term < term {
+		session.trace("Reject due to term: %d<%d", args.Term, term)
 	} else if args.PrevLogIndex <= rf.lastIncludedIndex {
 		session.trace("Accept, prevLogIndex cover discarded log")
 		reply.Success = true
 		offset := rf.lastIncludedIndex - args.PrevLogIndex
 		if 0 <= offset && offset < len(args.Entries) {
 			rf.log.AppendAt(rf.lastIncludedIndex+1, args.Entries[offset:])
-			rf.persist()
+			rf.state.persist()
 		}
 	} else if args.PrevLogIndex <= rf.log.LastIndex() {
 		t := rf.log.At(args.PrevLogIndex).Term
@@ -116,7 +114,7 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 			session.trace("Accept, append log at %d", args.PrevLogIndex+1)
 			reply.Success = true
 			rf.log.AppendAt(args.PrevLogIndex+1, args.Entries)
-			rf.persist()
+			rf.state.persist()
 		} else {
 			session.trace("Reject due to term mismatch at log[%d]: %d!=%d", args.PrevLogIndex, args.PrevLogTerm, t)
 		}
@@ -130,7 +128,6 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 			session.trace("Follower update commitIndex: commitIndex: %d", rf.state.getCommied())
 		}
 	}
-	rf.Unlock()
 	session.done <- true
 }
 
@@ -138,7 +135,7 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 	// if rf.nextIndex[peer] <= last log Index, send entries until lastLogIndex
 	// else send heartbeat, choose empty last log entry to send
-	rf.RLock()
+	rf.state.RLock()
 	isHeartBeat := false
 	lastIndex := rf.log.LastIndex()
 	toReplicate := rf.state.toReplicate(peer)
@@ -151,7 +148,7 @@ func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 	}
 
 	args := &AppendEntriesArgs{
-		Term:         rf.currentTerm,
+		Term:         rf.state.getTerm(),
 		LeaderID:     int32(rf.me),
 		PrevLogIndex: prevIndex,
 		PrevLogTerm:  prevTerm,
@@ -163,13 +160,12 @@ func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 			args.Entries = rf.log.Slice(toReplicate, toReplicate+1)
 		} else {
 			args.Entries = rf.log.Slice(toReplicate, rf.log.Length())
-
 		}
 		isHeartBeat = false
 	} else {
 		isHeartBeat = true
 	}
-	rf.RUnlock()
+	rf.state.RUnlock()
 
 	reply := new(AppendEntriesReply)
 	ok := rf.sendAppendEntries(peer, args, reply)

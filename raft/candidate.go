@@ -2,18 +2,15 @@ package raft
 
 import (
 	"time"
+
+	"github.com/golang/glog"
 )
 
 func (rf *Raft) doCandidate() {
-	rf.logInfo("Start leader election")
-	defer rf.logInfo("Quit leader election")
+	glog.Infof("%s Start leader election", rf.stateString())
+	defer glog.Infof("%s Quit leader election", rf.stateString())
 
-	rf.Lock()
-	rf.votedFor = int32(rf.me)
-	rf.currentTerm++
-	rf.persist()
-	rf.Unlock()
-
+	newTerm := rf.state.becomeCandidate()
 	votedCh := make(chan bool)
 	go rf.requestingVote(votedCh)
 
@@ -28,23 +25,21 @@ func (rf *Raft) doCandidate() {
 		case <-rf.shutdownCh:
 			return
 		case <-timeout:
-			rf.logInfo("LeaderElection timeout")
+			glog.Infof("%s LeaderElection timeout", rf.stateString())
 			return
 		case ok := <-votedCh:
 			if ok {
-				rf.Lock()
-				rf.role = leader
-				rf.Unlock()
-				rf.logInfo("Leader election succeed")
+				rf.state.becomeLeader()
+				glog.Infof("%s Leader election succeed", rf.stateString())
 				return
 			}
-			rf.logInfo("Leader election fail")
+			glog.Infof("%s Leader election fail", rf.stateString())
 		case s := <-rf.requestVoteChan:
 			rf.processRequestVote(s)
 		case s := <-rf.appendEntriesCh:
 			rf.processAppendEntries(s)
-			if s.args.Term >= rf.currentTerm {
-				rf.logInfo("Candidate receive leader heartbeat")
+			if s.args.Term >= newTerm {
+				glog.Infof("%s Candidate receive leader heartbeat", rf.stateString())
 				return
 			}
 		case <-rf.snapshotCh:

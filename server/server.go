@@ -3,7 +3,11 @@ package main
 import (
 	"flag"
 	_ "net/http/pprof"
+	"os"
 	"strings"
+
+	"os/signal"
+	"syscall"
 
 	"github.com/HelloCodeMing/raft-rocks/common"
 	"github.com/HelloCodeMing/raft-rocks/raft"
@@ -20,6 +24,13 @@ var (
 func init() {
 	flag.StringVar(&ServerAddr, "address", "localhost:10000", "address server listen to")
 	flag.StringVar(&Replicas, "replicas", "localhost:10000,localhost:10001,localhost:10002", "all replicas in raft group")
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		glog.Flush()
+		os.Exit(1)
+	}()
 }
 
 func main() {

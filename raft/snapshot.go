@@ -84,6 +84,7 @@ func (rf *Raft) notifySMTakeSnapshot() {
 	// rf.lastApplied = rf.lastIncludedIndex
 }
 
+/*
 // InstallSnapshot raft InstallSnapshot RPC
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	// prepare
@@ -125,7 +126,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	// retain log entry following the snapshot
 	// discard log
 	// reset state machine using snapshot
-	/*
 		if args.Done {
 			session.trace("Before snapshot raft state size: %d", rf.persister.RaftStateSize())
 			reply.Success = true
@@ -148,9 +148,10 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 				}
 			}
 		}
-	*/
 }
+*/
 
+/*
 func (rf *Raft) sendSnapshotTo(peer int) (fastRetry bool) {
 	rf.logInfo("Sending snapshot to peer<%d>, {lastIncludedIndex: %d, lastIncludedTerm: %d}",
 		peer, rf.lastIncludedIndex, rf.lastIncludedTerm)
@@ -177,7 +178,6 @@ func (rf *Raft) sendSnapshotTo(peer int) (fastRetry bool) {
 }
 
 func (rf *Raft) snapshoter() {
-	/*
 		rf.logInfo("Snapshoter start")
 		defer rf.logInfo("Snapshoter quit")
 		ticker := time.NewTicker(200 * time.Millisecond)
@@ -190,10 +190,8 @@ func (rf *Raft) snapshoter() {
 				rf.checkIfNeededSnapshot()
 			}
 		}
-	*/
 }
 
-/*
 func (rf *Raft) checkIfNeededSnapshot() {
 	if rf.maxStateSize == 0 || rf.maxStateSize == -1 || rf.snapshotCB == nil {
 		return

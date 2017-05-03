@@ -6,23 +6,13 @@ import (
 	"github.com/golang/glog"
 )
 
-func (rf *Raft) beFollower(candidateID int32, term int32) {
-	rf.currentTerm = term
-	rf.votedFor = candidateID
-	rf.role = follower
-	rf.persist()
-}
-
-func (rf *Raft) beFollowerLocked(candidateID int32, term int32) {
-	rf.Lock()
-	defer rf.Unlock()
-	rf.beFollower(candidateID, term)
-}
-
 func (rf *Raft) doFollower() {
 	glog.Infof("%s Become follower", rf.stateString())
 	defer glog.Infof("%s Follower quit", rf.stateString())
 
+	// 1. election timeout, turn to candidate
+	// 2. receive AppendEntries, append log
+	// 3. receive RequestVote, do voting
 	for {
 		select {
 		case <-rf.termChangedCh:
@@ -30,11 +20,7 @@ func (rf *Raft) doFollower() {
 		case <-rf.shutdownCh:
 			return
 		case <-time.After(rf.electionTO()):
-			rf.Lock()
-			rf.role = candidate
-			rf.votedFor = -1
-			rf.persist()
-			rf.Unlock()
+			rf.state.changeRole(candidate)
 			rf.logInfo("Follower lose heartbeat, become candidate")
 			return
 		case s := <-rf.appendEntriesCh:

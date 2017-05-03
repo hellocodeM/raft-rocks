@@ -167,21 +167,25 @@ func (kv *RaftKV) applyCommand(msg raft.ApplyMsg) {
 	kv.rf.UpdateReadLease(msg.Term, start)
 }
 
+func (kv *RaftKV) String() string {
+	return fmt.Sprintf("RaftKV<%d>", kv.me)
+}
+
 func (kv *RaftKV) applier() {
-	glog.V(common.VDebug).Infoln("Applier start")
-	defer glog.V(common.VDebug).Infoln("Applier quit")
+	glog.V(common.VDebug).Infof("%s Applier start", kv.String())
+	defer glog.V(common.VDebug).Infof("%s Applier quit", kv.String())
 
 	for {
 		select {
 		case msg := <-kv.applyCh:
 			if msg.UseSnapshot {
-				glog.V(common.VDebug).Infof("Receive snapshot, lastIncludedIndex=%d", msg.Index)
+				glog.V(common.VDebug).Infof("%s Receive snapshot, lastIncludedIndex=%d", kv.String(), msg.Index)
 				s := raft.Snapshot{}
 				buf := bytes.NewReader(msg.Snapshot)
 				s.Decode(buf)
 				kv.takeSnapshot(&s)
 			} else {
-				glog.V(common.VDump).Infof("Receive command: %+v", msg)
+				glog.V(common.VDump).Infof("%s Receive command: %+v", kv.String(), msg)
 				if msg.Command == nil {
 					log.Println(kv.rf)
 					panic("Should not receive empty command")
@@ -266,7 +270,7 @@ func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister)
 	glog.Infoln("Creating RaftKV")
 	kv.rf = raft.NewRaft(servers, me, persister, kv.applyCh)
 	rpc.Register(kv.rf)
-	kv.rf.SetSnapshot(kv.snapshot)
+	// kv.rf.SetSnapshot(kv.snapshot)
 	glog.Infof("Created RaftKV, db: %v, clientDN: %v", kv.store, kv.clientSN)
 
 	return kv
