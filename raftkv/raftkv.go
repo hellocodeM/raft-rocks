@@ -41,13 +41,11 @@ var (
 )
 
 type RaftKV struct {
-	mu           sync.Mutex
-	me           int
-	rf           *raft.Raft
-	maxRaftState int // snapshot if log grows this big
-	applyCh      chan raft.ApplyMsg
-	stopCh       chan bool
-	persister    *raft.Persister
+	mu      sync.Mutex
+	me      int
+	rf      *raft.Raft
+	applyCh chan raft.ApplyMsg
+	stopCh  chan bool
 
 	store    store.KVStorage
 	waiting  map[int]chan *common.KVCommand
@@ -226,6 +224,7 @@ func (kv *RaftKV) Kill() {
 	kv.store.Close()
 }
 
+/*
 // snapshot state to persister, callback by raft
 func (kv *RaftKV) snapshot(lastIndex int, lastTerm int32) {
 	glog.Infof("snapshot state to persister")
@@ -242,6 +241,7 @@ func (kv *RaftKV) snapshot(lastIndex int, lastTerm int32) {
 	s.Encode(buf)
 	kv.persister.SaveSnapshot(buf.Bytes())
 }
+*/
 
 // reset state machine from snapshot, callback by raft
 func (kv *RaftKV) takeSnapshot(snapshot *raft.Snapshot) {
@@ -296,7 +296,7 @@ func (kv *RaftKV) String() string {
 	return fmt.Sprintf("RaftKV<%d>", kv.me)
 }
 
-func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister) *RaftKV {
+func StartRaftKV(servers []*common.ClientEnd, me int) *RaftKV {
 	glog.Infoln("Creating RaftKV")
 	kv := new(RaftKV)
 	kv.me = me
@@ -305,7 +305,6 @@ func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister)
 	kv.stopCh = make(chan bool)
 	kv.clientSN = make(map[int64]int64)
 	kv.logger = trace.NewEventLog("RaftKV", fmt.Sprintf("peer<%d>", me))
-	kv.persister = persister
 	kv.waiting = make(map[int]chan *common.KVCommand)
 
 	_, columns, err := store.OpenTable(StoragePath, []string{"default", "kv", "log", "meta"})
@@ -314,6 +313,7 @@ func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister)
 	assertNoError(err)
 	log, err := store.MakeLogStorage(columns[2])
 	assertNoError(err)
+	persister := store.MakeRocksBasedPersister(columns[3])
 	kv.rf = raft.NewRaft(servers, me, persister, log, kv.applyCh)
 	rpc.Register(kv.rf)
 

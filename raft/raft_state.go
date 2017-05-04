@@ -1,8 +1,6 @@
 package raft
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"sync"
@@ -11,6 +9,7 @@ import (
 	"encoding/json"
 
 	"github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/store"
 	"github.com/golang/glog"
 )
 
@@ -18,7 +17,7 @@ import (
 type raftState struct {
 	sync.RWMutex
 	raft      *Raft
-	persister *Persister
+	persister store.Persister
 
 	// once initialized, they will not be changed
 	Me       int
@@ -32,7 +31,16 @@ type raftState struct {
 	MatchIndex []int
 	NextIndex  []int
 
-	// volatile state
+	// in raft paper, these two field is volatile
+	// when restart, we need replay all WAL to recover state
+	// otherwise, we have to do checkpoint, and record where has beed commited and applied to state machine
+	// but when it comes to RocksDB like storage engine, it has its own WAL, so the storage itself is durable
+	// but disappointing, even if reading RocksDB's WAL to get LastApplied is possible, it's too tricky
+	// An elegant way to avoid 'double WAL' may be stop use WAL in RocksDB, but only in Raft,
+	// and in raft we could perioidly do checkpoint/snapshot, persist LastApplied, as a result, we just need to
+	// restore state machine from checkpoint, and replay WAL.
+	//
+	// All above is just my imagination, the real implementation is too naive. When LastApplied is updated, store it in persister.
 	CommitIndex int // index of highest log entry known to be committed
 	LastApplied int // index of highest log entry applied to state machine
 
@@ -58,27 +66,43 @@ func (s *raftState) getCommied() int {
 	return s.CommitIndex
 }
 
+const (
+	currentTerm = "currentTerm"
+	votedFor    = "votedFor"
+	commitIndex = "commitIndex"
+	lastApplied = "lastApplied"
+)
+
 func (s *raftState) persist() {
-	buff := new(bytes.Buffer)
-	err := binary.Write(buff, binary.LittleEndian, s.VotedFor)
-	err = binary.Write(buff, binary.LittleEndian, s.CurrentTerm)
-	if err != nil {
-		glog.Fatal(err)
-	}
-	s.persister.SaveRaftState(buff.Bytes())
+	s.persister.StoreInt32(currentTerm, s.CurrentTerm)
+	s.persister.StoreInt32(votedFor, s.VotedFor)
 }
 
-// restore previously persisted state.
-func (s *raftState) readPersist(data []byte) {
-	if len(data) == 0 {
-		return
+func (s *raftState) restore() {
+	var ok bool
+	s.CurrentTerm, ok = s.persister.LoadInt32(currentTerm)
+	s.VotedFor, ok = s.persister.LoadInt32(votedFor)
+	if !ok {
+		s.VotedFor = -1
 	}
-	buff := bytes.NewBuffer(data)
-	err1 := binary.Read(buff, binary.LittleEndian, &s.VotedFor)
-	err2 := binary.Read(buff, binary.LittleEndian, &s.CurrentTerm)
-	if err1 != nil || err2 != nil {
-		glog.Fatal("read state failed")
+	commit, ok := s.persister.LoadInt32(commitIndex)
+	if ok {
+		s.CommitIndex = int(commit)
 	}
+	apply, ok := s.persister.LoadInt32(lastApplied)
+	if ok {
+		s.LastApplied = int(apply)
+	}
+}
+
+func (s *raftState) commitUntil(index int) {
+	s.CommitIndex = index
+	s.persister.StoreInt32(commitIndex, int32(index))
+}
+
+func (s *raftState) applyOne() {
+	s.LastApplied++
+	s.persister.StoreInt32(lastApplied, int32(s.LastApplied))
 }
 
 func (s *raftState) checkNewTerm(newTerm int32) bool {
@@ -92,7 +116,7 @@ func (s *raftState) checkFollowerCommit(leaderCommit int) bool {
 	s.Lock()
 	defer s.Unlock()
 	if leaderCommit > s.CommitIndex {
-		s.CommitIndex = leaderCommit
+		s.commitUntil(leaderCommit)
 		s.checkApply()
 		return true
 	}
@@ -104,7 +128,7 @@ func (s *raftState) checkApply() {
 	old := s.LastApplied
 	rf := s.raft
 	for s.CommitIndex > s.LastApplied {
-		s.LastApplied++
+		s.applyOne()
 		if rf.log.LastIndex() < s.LastApplied {
 			panic(rf.String())
 		}
@@ -196,7 +220,7 @@ func (s *raftState) checkLeaderCommit() (updated bool) {
 			}
 		}
 		if cnt >= rf.majority() {
-			s.CommitIndex = N
+			s.commitUntil(N)
 			glog.V(common.VDebug).Infof("%s Leader update commitIndex: %d", s.String(), s.CommitIndex)
 			updated = true
 			break
@@ -245,8 +269,8 @@ func (s *raftState) dump(writer io.Writer) {
 	writer.Write(buf)
 }
 
-func makeRaftState(raft *Raft, persister *Persister, numPeers int, me int) *raftState {
-	return &raftState{
+func makeRaftState(raft *Raft, persister store.Persister, numPeers int, me int) *raftState {
+	s := &raftState{
 		raft:        raft,
 		NumPeers:    numPeers,
 		Me:          me,
@@ -256,4 +280,7 @@ func makeRaftState(raft *Raft, persister *Persister, numPeers int, me int) *raft
 		readLease:   time.Now(),
 		persister:   persister,
 	}
+	s.restore()
+	glog.Infof("Restore raft state: CurrentTerm: %d, CommitIndex: %d, LastApplied: %d", s.CurrentTerm, s.CommitIndex, s.LastApplied)
+	return s
 }

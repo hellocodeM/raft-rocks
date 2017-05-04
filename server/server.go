@@ -10,7 +10,6 @@ import (
 	"syscall"
 
 	"github.com/HelloCodeMing/raft-rocks/common"
-	"github.com/HelloCodeMing/raft-rocks/raft"
 	"github.com/HelloCodeMing/raft-rocks/raftkv"
 	"github.com/golang/glog"
 )
@@ -51,7 +50,7 @@ func main() {
 		glog.Fatalf("replicas not contains the server itself,this=%s,replicas=%s", ServerAddr, Replicas)
 	}
 	// start server
-	raftkv := raftkv.StartRaftKV(servers, me, raft.MakePersister())
+	raftkv := raftkv.StartRaftKV(servers, me)
 	server := common.MakeServerEnd(ServerAddr)
 	server.AddService(raftkv)
 	server.Serve()

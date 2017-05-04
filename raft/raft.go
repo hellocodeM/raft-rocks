@@ -208,7 +208,7 @@ func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int32,
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //
-func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, log *store.LogStorage, applyCh chan ApplyMsg) *Raft {
+func NewRaft(peers []*common.ClientEnd, me int, persister store.Persister, log *store.LogStorage, applyCh chan ApplyMsg) *Raft {
 	rf := new(Raft)
 	rf.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	rf.peers = peers
@@ -225,14 +225,10 @@ func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, log *store
 	rf.state = makeRaftState(rf, persister, len(peers), me)
 	rf.makeTracer()
 
-	// initialize from state persisted before a crash
-	rf.state.readPersist(persister.ReadRaftState())
-	// rf.recoverSnapshot()
-
 	glog.Infof("%s Created raft instance: %s", rf.stateString(), rf.String())
-
 	go rf.startStateMachine()
-	// go rf.snapshoter()
+
+	// a http interface to dump raft state, for debug purpose
 	http.HandleFunc("/raft", func(res http.ResponseWriter, req *http.Request) {
 		rf.state.dump(res)
 		req.Body.Close()

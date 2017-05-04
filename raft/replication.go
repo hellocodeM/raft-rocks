@@ -105,7 +105,6 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 		offset := rf.lastIncludedIndex - args.PrevLogIndex
 		if 0 <= offset && offset < len(args.Entries) {
 			rf.log.AppendAt(rf.lastIncludedIndex+1, args.Entries[offset:])
-			rf.state.persist()
 		}
 	} else if args.PrevLogIndex <= rf.log.LastIndex() {
 		t := rf.log.At(args.PrevLogIndex).Term
@@ -113,7 +112,6 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 			session.trace("Accept, append log at %d", args.PrevLogIndex+1)
 			reply.Success = true
 			rf.log.AppendAt(args.PrevLogIndex+1, args.Entries)
-			rf.state.persist()
 		} else {
 			session.trace("Reject due to term mismatch at log[%d]: %d!=%d", args.PrevLogIndex, args.PrevLogTerm, t)
 		}
