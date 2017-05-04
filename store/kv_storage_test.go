@@ -1,9 +1,8 @@
-package raftkv
+package store
 
 import (
-	"testing"
-
 	"os"
+	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -11,7 +10,9 @@ import (
 func TestRocksDBStorage(t *testing.T) {
 	A := assert.New(t)
 	const dir = "./testrocks"
-	db, err := MakeRocksDBStore(dir)
+	_, columns, err := OpenTable(dir, []string{"default"})
+	A.NoError(err)
+	db, err := MakeRocksDBStore(columns[0])
 	A.NoError(err)
 	defer db.Close()
 	defer os.RemoveAll(dir)

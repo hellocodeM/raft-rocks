@@ -12,6 +12,7 @@ import (
 
 	"github.com/HelloCodeMing/raft-rocks/common"
 	"github.com/HelloCodeMing/raft-rocks/raft"
+	"github.com/HelloCodeMing/raft-rocks/store"
 	"github.com/golang/glog"
 	"golang.org/x/net/trace"
 )
@@ -22,6 +23,7 @@ var (
 	OpTimeout         time.Duration
 	UseRocksDB        bool
 	StoragePath       string
+	LogStorage        string
 )
 
 func init() {
@@ -29,6 +31,7 @@ func init() {
 	flag.BoolVar(&ReportRaftKVState, "report_raftkv_state", false, "report raftkv state perioidly")
 	flag.BoolVar(&UseRocksDB, "use_rocksdb", false, "use rocksdb dor durable storage")
 	flag.StringVar(&StoragePath, "storage_path", "/tmp/raftrocks-storage", "where to store data")
+	flag.StringVar(&LogStorage, "log_storage", "rocksdb", "whether memory or rocksdb")
 }
 
 // errors
@@ -46,7 +49,7 @@ type RaftKV struct {
 	stopCh       chan bool
 	persister    *raft.Persister
 
-	store    KVStorage
+	store    store.KVStorage
 	waiting  map[*common.KVCommand]chan bool
 	clientSN map[int64]int64 // client SN should be incremental, otherwise the command will be ignored
 	clientID int64
@@ -256,7 +259,47 @@ func (kv *RaftKV) takeSnapshot(snapshot *raft.Snapshot) {
 	kv.clientSN = snapshot.ClientSN
 }
 
+/*
+func initKVStorage() KVStorage {
+	if UseRocksDB {
+		store, err := MakeRocksDBStore(StoragePath)
+		if err != nil {
+			glog.Fatal("Fail to create storage,", err)
+		}
+		return store
+	}
+	return MakeMemKVStore()
+}
+
+// TODO implement memory based log
+func initLogStorage() *LogStorage {
+	switch LogStorage {
+	case "rocksdb":
+		opt := gorocksdb.NewDefaultOptions()
+		opt.SetCreateIfMissing(true)
+		opt.SetCreateIfMissingColumnFamilies(true)
+		cfNames := []string{"default", "log", "meta", "kv"}
+		db, cfs, err := gorocksdb.OpenDbColumnFamilies(opt, cfNames, []*gorocksdb.Options{opt, opt, opt, opt})
+		if err != nil  {
+			glog.Fatal("Fail to init Log storage: ", err)
+		}
+		return MakeLogStorage(db, cfs[1])
+	case "memory":
+		panic("not implemented")
+	default:
+		panic("unknow log storage: ", LogStorage)
+
+	}
+}
+*/
+
+func assertNoError(err error) {
+	if err != nil {
+		glog.Fatal(err)
+	}
+}
 func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister) *RaftKV {
+	glog.Infoln("Creating RaftKV")
 	kv := new(RaftKV)
 	kv.me = me
 
@@ -266,24 +309,18 @@ func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister)
 	kv.logger = trace.NewEventLog("RaftKV", fmt.Sprintf("peer<%d>", me))
 	kv.persister = persister
 	kv.waiting = make(map[*common.KVCommand]chan bool)
-	if UseRocksDB {
-		var err error
-		kv.store, err = MakeRocksDBStore(StoragePath)
-		if err != nil {
-			glog.Fatal("Fail to create storage,", err)
-		}
-	} else {
-		kv.store = MakeMemKVStore()
-	}
 
-	go kv.reporter()
-	go kv.applier()
-
-	glog.Infoln("Creating RaftKV")
-	kv.rf = raft.NewRaft(servers, me, persister, kv.applyCh)
+	_, columns, err := store.OpenTable(StoragePath, []string{"default", "kv", "log", "meta"})
+	assertNoError(err)
+	kv.store, err = store.MakeRocksDBStore(columns[1])
+	assertNoError(err)
+	log, err := store.MakeLogStorage(columns[2])
+	assertNoError(err)
+	kv.rf = raft.NewRaft(servers, me, persister, log, kv.applyCh)
 	rpc.Register(kv.rf)
-	// kv.rf.SetSnapshot(kv.snapshot)
+
 	glog.Infof("Created RaftKV, db: %v, clientDN: %v", kv.store, kv.clientSN)
+	go kv.applier()
 
 	return kv
 }

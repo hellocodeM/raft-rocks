@@ -62,7 +62,6 @@ func (s *raftState) persist() {
 	buff := new(bytes.Buffer)
 	err := binary.Write(buff, binary.LittleEndian, s.VotedFor)
 	err = binary.Write(buff, binary.LittleEndian, s.CurrentTerm)
-	err = s.raft.log.Encode(buff)
 	if err != nil {
 		glog.Fatal(err)
 	}
@@ -77,8 +76,7 @@ func (s *raftState) readPersist(data []byte) {
 	buff := bytes.NewBuffer(data)
 	err1 := binary.Read(buff, binary.LittleEndian, &s.VotedFor)
 	err2 := binary.Read(buff, binary.LittleEndian, &s.CurrentTerm)
-	err3 := s.raft.log.Decode(buff)
-	if err1 != nil || err2 != nil || err3 != nil {
+	if err1 != nil || err2 != nil {
 		glog.Fatal("read state failed")
 	}
 }

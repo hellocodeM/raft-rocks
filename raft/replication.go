@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	. "github.com/HelloCodeMing/raft-rocks/common"
 	"golang.org/x/net/trace"
 )
 
@@ -157,7 +158,7 @@ func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 		if atomic.LoadInt32(retreatCnt) > 0 {
 			args.Entries = rf.log.Slice(toReplicate, toReplicate+1)
 		} else {
-			args.Entries = rf.log.Slice(toReplicate, rf.log.Length())
+			args.Entries = rf.log.Slice(toReplicate, rf.log.LastIndex()+1)
 		}
 		isHeartBeat = false
 	} else {

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/HelloCodeMing/raft-rocks/common"
+	. "github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/store"
 	"github.com/golang/glog"
 	"golang.org/x/net/trace"
 )
@@ -36,7 +38,7 @@ type Raft struct {
 	me    int // index into peers[]
 	rand  *rand.Rand
 
-	log   *LogManager
+	log   *store.LogStorage
 	state *raftState
 
 	// raft send apply message to RaftKV
@@ -149,22 +151,6 @@ func (rf *Raft) makeTracer() {
 	rf.tracer = trace.NewEventLog("Raft", fmt.Sprintf("peer<%d,%d>", rf.me, rf.state.getTerm()))
 }
 
-func (raft *Raft) reporter() {
-	if !reportRaftState {
-		return
-	}
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			raft.logInfo("Raft state: %v", raft)
-		case <-raft.shutdownCh:
-			return
-		}
-	}
-}
-
 func (rf *Raft) Kill() {
 	rf.logInfo("Killing raft, wait for goroutines to quit")
 	close(rf.shutdownCh)
@@ -222,14 +208,14 @@ func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int32,
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //
-func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
+func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, log *store.LogStorage, applyCh chan ApplyMsg) *Raft {
 	rf := new(Raft)
 	rf.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	rf.peers = peers
 	rf.me = me
 	rf.applyCh = applyCh
 
-	rf.log = NewLogManager()
+	rf.log = log
 	rf.requestVoteChan = make(chan *RequestVoteSession)
 	rf.appendEntriesCh = make(chan *AppendEntriesSession)
 	rf.snapshotCh = make(chan *installSnapshotSession)
@@ -246,7 +232,6 @@ func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh ch
 	glog.Infof("%s Created raft instance: %s", rf.stateString(), rf.String())
 
 	go rf.startStateMachine()
-	// go rf.reporter()
 	// go rf.snapshoter()
 	http.HandleFunc("/raft", func(res http.ResponseWriter, req *http.Request) {
 		rf.state.dump(res)
