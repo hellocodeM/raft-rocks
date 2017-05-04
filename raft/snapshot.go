@@ -78,7 +78,7 @@ func (rf *Raft) notifySMTakeSnapshot() {
 		Index:       rf.lastIncludedIndex,
 		Command:     nil,
 		UseSnapshot: true,
-		Snapshot:    rf.persister.ReadSnapshot(),
+		// Snapshot:    rf.persister.ReadSnapshot(),
 	}
 	rf.applyCh <- msg
 	// rf.lastApplied = rf.lastIncludedIndex

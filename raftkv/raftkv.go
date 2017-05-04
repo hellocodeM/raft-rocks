@@ -20,11 +20,15 @@ import (
 var (
 	ReportRaftKVState bool
 	OpTimeout         time.Duration
+	UseRocksDB        bool
+	StoragePath       string
 )
 
 func init() {
 	flag.DurationVar(&OpTimeout, "operation_timeout", 2*time.Second, "operation timeout")
 	flag.BoolVar(&ReportRaftKVState, "report_raftkv_state", false, "report raftkv state perioidly")
+	flag.BoolVar(&UseRocksDB, "use_rocksdb", false, "use rocksdb dor durable storage")
+	flag.StringVar(&StoragePath, "storage_path", "/tmp/raftrocks-storage", "where to store data")
 }
 
 // errors
@@ -223,6 +227,7 @@ func (kv *RaftKV) reporter() {
 func (kv *RaftKV) Kill() {
 	kv.rf.Kill()
 	close(kv.stopCh)
+	kv.store.Close()
 }
 
 // snapshot state to persister, callback by raft
@@ -257,12 +262,19 @@ func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.stopCh = make(chan bool)
-	// TODO inject
-	kv.store = MakeMemKVStore()
 	kv.clientSN = make(map[int64]int64)
 	kv.logger = trace.NewEventLog("RaftKV", fmt.Sprintf("peer<%d>", me))
 	kv.persister = persister
 	kv.waiting = make(map[*common.KVCommand]chan bool)
+	if UseRocksDB {
+		var err error
+		kv.store, err = MakeRocksDBStore(StoragePath)
+		if err != nil {
+			glog.Fatal("Fail to create storage,", err)
+		}
+	} else {
+		kv.store = MakeMemKVStore()
+	}
 
 	go kv.reporter()
 	go kv.applier()

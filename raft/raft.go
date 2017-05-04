@@ -32,16 +32,12 @@ type ApplyMsg struct {
 
 // Raft A Go object implementing a single Raft peer.
 type Raft struct {
-	peers     []*common.ClientEnd
-	persister *Persister
-	me        int // index into peers[]
-
-	// persistent state
-	log *LogManager
-
-	// volatile state on leaders, reinitialized after election
-	state *raftState
+	peers []*common.ClientEnd
+	me    int // index into peers[]
 	rand  *rand.Rand
+
+	log   *LogManager
+	state *raftState
 
 	// raft send apply message to RaftKV
 	applyCh chan ApplyMsg
@@ -230,7 +226,6 @@ func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh ch
 	rf := new(Raft)
 	rf.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	rf.peers = peers
-	rf.persister = persister
 	rf.me = me
 	rf.applyCh = applyCh
 
@@ -241,7 +236,7 @@ func NewRaft(peers []*common.ClientEnd, me int, persister *Persister, applyCh ch
 	rf.shutdownCh = make(chan bool)
 	rf.termChangedCh = make(chan bool, 1)
 	rf.submitedCh = make(chan int, 10)
-	rf.state = makeRaftState(rf, len(peers), me)
+	rf.state = makeRaftState(rf, persister, len(peers), me)
 	rf.makeTracer()
 
 	// initialize from state persisted before a crash

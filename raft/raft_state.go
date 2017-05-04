@@ -17,14 +17,18 @@ import (
 // Hold state of raft, coordinate the updating and reading
 type raftState struct {
 	sync.RWMutex
-	raft     *Raft
+	raft      *Raft
+	persister *Persister
+
+	// once initialized, they will not be changed
 	Me       int
 	NumPeers int
-	Role     raftRole
 
+	Role        raftRole
 	CurrentTerm int32
-	VotedFor    int32 // to prevent one follower vote for multi candidate, when then restart
+	VotedFor    int32
 
+	// maintained by leader, record follower's repliate and commit state
 	MatchIndex []int
 	NextIndex  []int
 
@@ -62,7 +66,7 @@ func (s *raftState) persist() {
 	if err != nil {
 		glog.Fatal(err)
 	}
-	s.raft.persister.SaveRaftState(buff.Bytes())
+	s.persister.SaveRaftState(buff.Bytes())
 }
 
 // restore previously persisted state.
@@ -245,7 +249,7 @@ func (s *raftState) dump(writer io.Writer) {
 	writer.Write(buf)
 }
 
-func makeRaftState(raft *Raft, numPeers int, me int) *raftState {
+func makeRaftState(raft *Raft, persister *Persister, numPeers int, me int) *raftState {
 	return &raftState{
 		raft:        raft,
 		NumPeers:    numPeers,
@@ -254,5 +258,6 @@ func makeRaftState(raft *Raft, numPeers int, me int) *raftState {
 		VotedFor:    -1,
 		Role:        follower,
 		readLease:   time.Now(),
+		persister:   persister,
 	}
 }
