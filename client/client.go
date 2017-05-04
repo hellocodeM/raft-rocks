@@ -37,9 +37,9 @@ func init() {
 
 // Clerk client implementation
 type Clerk struct {
-	serverAddrs []string
-	leader      int
-	client      *common.ClientEnd
+	serverAddrs   []string
+	currentServer int
+	client        *common.ClientEnd
 
 	clientID int64
 	SN       int64
@@ -59,15 +59,24 @@ func MakeClerk(servers []string) (*Clerk, error) {
 func (ck *Clerk) openSession() error {
 	servers := ck.serverAddrs
 	for _, addr := range servers {
-		ck.client = common.MakeClientEnd(addr)
-		reply := &common.OpenSessionReply{}
-		err := ck.client.Call("RaftKV.OpenSession", &common.OpenSessionArgs{}, reply)
-		if err == nil && reply.Status == common.OK {
-			ck.clientID = reply.ClientID
+		if ck.connect(addr) == nil {
 			return nil
 		}
 	}
 	return ErrUnavailableServer
+}
+
+func (ck *Clerk) connect(server string) error {
+	ck.client = common.MakeClientEnd(server)
+	reply := &common.OpenSessionReply{}
+	err := ck.client.Call("RaftKV.OpenSession", &common.OpenSessionArgs{}, reply)
+	if err == nil && reply.Status == common.OK {
+		ck.clientID = reply.ClientID
+		glog.Infof("Clerk connect to %s succeed", server)
+		return nil
+	}
+	glog.Infof("Clerk connect to %s failed,error=%s", server, err)
+	return err
 }
 
 func (ck *Clerk) closeSession() {
@@ -136,13 +145,15 @@ func (ck *Clerk) handleError(rpcErr error, err common.ClerkResult) {
 		glog.Warning(err)
 	}
 	ck.rollLeader()
-	glog.Warningf("try server: %d", ck.leader)
+	glog.Warningf("try server: %d", ck.currentServer)
 	time.Sleep(RetryInterval)
 }
 
 func (ck *Clerk) rollLeader() {
-	ck.leader = (ck.leader + 1) % len(ck.serverAddrs)
-
+	ck.closeSession()
+	ck.currentServer = (ck.currentServer + 1) % len(ck.serverAddrs)
+	server := ck.serverAddrs[ck.currentServer]
+	ck.connect(server)
 }
 
 func main() {

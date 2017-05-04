@@ -11,6 +11,7 @@ func BenchmarkGet(b *testing.B) {
 		panic(err)
 	}
 	defer client.closeSession()
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		client.Get("1")
 	}
