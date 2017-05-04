@@ -227,8 +227,6 @@ func (s *raftState) toReplicate(peer int) int {
 
 // If lease is granted in this term, and later than the old one, extend the lease
 func (s *raftState) updateReadLease(term int32, lease time.Time) {
-	s.Lock()
-	defer s.Unlock()
 	if term == s.CurrentTerm && lease.After(s.readLease) {
 		s.readLease = lease
 		glog.Infof("%s Update read lease to %v", s.String(), lease)

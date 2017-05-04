@@ -50,7 +50,7 @@ type RaftKV struct {
 	persister    *raft.Persister
 
 	store    store.KVStorage
-	waiting  map[*common.KVCommand]chan bool
+	waiting  map[int]chan *common.KVCommand
 	clientSN map[int64]int64 // client SN should be incremental, otherwise the command will be ignored
 	clientID int64
 	logger   trace.EventLog
@@ -72,27 +72,30 @@ func (kv *RaftKV) isUniqueSN(clientID int64, SN int64) bool {
 	return true
 }
 
-func hashCommand(clientID, SN int) int {
-	return clientID*1000 + SN
+func hashCommand(cmd *common.KVCommand) int {
+	return int(cmd.ClientID + cmd.SN*1E4)
 }
 
+// TODO: wait and notify is too decoupled, may be we could achieve it with a channel?
 // Get/PutAppend wait for command applied
 // Command could be submit many times, it should be idempotent.
 // Command could be identified by <ClientID, SN>
 // one command could appear in multi log index, meanwhile on log index could represent multi command, the relationship is N to N.
 func (kv *RaftKV) waitFor(cmd *common.KVCommand) error {
 	kv.mu.Lock()
-	kv.waiting[cmd] = make(chan bool, 1)
+	hashVal := hashCommand(cmd)
+	kv.waiting[hashVal] = make(chan *common.KVCommand, 1)
 	kv.mu.Unlock()
 	var err error
 	select {
-	case <-kv.waiting[cmd]:
+	case res := <-kv.waiting[hashVal]:
+		cmd.Res = res.Res
 		err = nil
 	case <-time.After(OpTimeout):
 		err = errTimeout
 	}
 	kv.mu.Lock()
-	delete(kv.waiting, cmd)
+	delete(kv.waiting, hashVal)
 	kv.mu.Unlock()
 	return err
 }
@@ -100,8 +103,11 @@ func (kv *RaftKV) waitFor(cmd *common.KVCommand) error {
 func (kv *RaftKV) notify(cmd *common.KVCommand) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	if ch, ok := kv.waiting[cmd]; ok {
-		ch <- true
+	hashVal := hashCommand(cmd)
+	if ch, ok := kv.waiting[hashVal]; ok {
+		ch <- cmd
+	} else {
+		glog.Warning("Try to finish a non-exist command, it may timeout: ", cmd)
 	}
 }
 
@@ -109,7 +115,13 @@ func (kv *RaftKV) Get(args *common.GetArgs, reply *common.GetReply) error {
 	cmd := common.NewKVCommand(common.CmdGet, args, reply, args.ClientID, args.SN, args.LogID)
 	defer cmd.Finish()
 	cmd.Trace("args: %+v", *args)
-	return kv.submitCommand(cmd)
+	err := kv.submitCommand(cmd)
+	// TODO: reply is just a pointer in command, command will be serialized and deserialized,
+	// so this pointer in resulted cmd will points to different address
+	// a work-around for this is to do a deep-copy for this field,
+	// but we need a more elegant way
+	*reply = *cmd.Res.(*common.GetReply)
+	return err
 }
 
 func (kv *RaftKV) Put(args *common.PutArgs, reply *common.PutReply) error {
@@ -139,6 +151,7 @@ func (kv *RaftKV) submitCommand(cmd *common.KVCommand) error {
 }
 
 func (kv *RaftKV) applyCommand(msg raft.ApplyMsg) {
+	glog.Infof("Apply command at index %d to SM", msg.Index)
 	cmd := msg.Command
 	cmd.Trace("Apply start: %+v", cmd)
 
@@ -174,11 +187,7 @@ func (kv *RaftKV) applyCommand(msg raft.ApplyMsg) {
 	kv.rf.UpdateReadLease(msg.Term, start)
 }
 
-func (kv *RaftKV) String() string {
-	return fmt.Sprintf("RaftKV<%d>", kv.me)
-}
-
-func (kv *RaftKV) applier() {
+func (kv *RaftKV) doApply() {
 	glog.V(common.VDebug).Infof("%s Applier start", kv.String())
 	defer glog.V(common.VDebug).Infof("%s Applier quit", kv.String())
 
@@ -200,22 +209,6 @@ func (kv *RaftKV) applier() {
 				kv.applyCommand(msg)
 				kv.notify(msg.Command)
 			}
-		case <-kv.stopCh:
-			return
-		}
-	}
-}
-
-func (kv *RaftKV) reporter() {
-	if !ReportRaftKVState {
-		return
-	}
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			glog.V(common.VDump).Infof("KV State: {db: %v}", kv.store)
 		case <-kv.stopCh:
 			return
 		}
@@ -298,6 +291,11 @@ func assertNoError(err error) {
 		glog.Fatal(err)
 	}
 }
+
+func (kv *RaftKV) String() string {
+	return fmt.Sprintf("RaftKV<%d>", kv.me)
+}
+
 func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister) *RaftKV {
 	glog.Infoln("Creating RaftKV")
 	kv := new(RaftKV)
@@ -308,7 +306,7 @@ func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister)
 	kv.clientSN = make(map[int64]int64)
 	kv.logger = trace.NewEventLog("RaftKV", fmt.Sprintf("peer<%d>", me))
 	kv.persister = persister
-	kv.waiting = make(map[*common.KVCommand]chan bool)
+	kv.waiting = make(map[int]chan *common.KVCommand)
 
 	_, columns, err := store.OpenTable(StoragePath, []string{"default", "kv", "log", "meta"})
 	assertNoError(err)
@@ -320,7 +318,7 @@ func StartRaftKV(servers []*common.ClientEnd, me int, persister *raft.Persister)
 	rpc.Register(kv.rf)
 
 	glog.Infof("Created RaftKV, db: %v, clientDN: %v", kv.store, kv.clientSN)
-	go kv.applier()
+	go kv.doApply()
 
 	return kv
 }
