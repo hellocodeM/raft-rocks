@@ -49,6 +49,7 @@ const (
 	ErrTimeout
 	ErrNoKey
 	ErrNotLeader
+	ErrNoSession
 )
 
 func (error ClerkResult) String() string {
@@ -61,6 +62,8 @@ func (error ClerkResult) String() string {
 		return "ErrNotLeader"
 	case ErrTimeout:
 		return "ErrTimeout"
+	case ErrNoSession:
+		return "ErrNoSession"
 	default:
 		return "Unknown"
 	}

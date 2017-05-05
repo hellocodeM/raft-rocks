@@ -40,6 +40,11 @@ var (
 	errTimeout   = errors.New("operation timeout")
 )
 
+const (
+	clientIDKey = "clientID"
+)
+
+// RaftKV consist of: KVStorage, Raft, SessionManager
 type RaftKV struct {
 	mu      sync.Mutex
 	me      int
@@ -47,10 +52,12 @@ type RaftKV struct {
 	applyCh chan raft.ApplyMsg
 	stopCh  chan bool
 
-	store    store.KVStorage
-	waiting  map[int]chan *common.KVCommand
+	store     store.KVStorage
+	persister store.Persister
+	waiting   map[int]chan *common.KVCommand
+
 	clientSN map[int64]int64 // client SN should be incremental, otherwise the command will be ignored
-	clientID int64
+	clientID int64           // this field need to be persist
 	logger   trace.EventLog
 }
 
@@ -109,7 +116,18 @@ func (kv *RaftKV) notify(cmd *common.KVCommand) {
 	}
 }
 
+func (kv *RaftKV) checkSession(clientID int64) common.ClerkResult {
+	if _, ok := kv.clientSN[clientID]; !ok {
+		return common.ErrNoSession
+	}
+	return common.OK
+}
+
 func (kv *RaftKV) Get(args *common.GetArgs, reply *common.GetReply) error {
+	if kv.checkSession(args.ClientID) != common.OK {
+		reply.Status = common.ErrNoSession
+		return nil
+	}
 	cmd := common.NewKVCommand(common.CmdGet, args, reply, args.ClientID, args.SN, args.LogID)
 	defer cmd.Finish()
 	cmd.Trace("args: %+v", *args)
@@ -123,6 +141,10 @@ func (kv *RaftKV) Get(args *common.GetArgs, reply *common.GetReply) error {
 }
 
 func (kv *RaftKV) Put(args *common.PutArgs, reply *common.PutReply) error {
+	if kv.checkSession(args.ClientID) != common.OK {
+		reply.Status = common.ErrNoSession
+		return nil
+	}
 	cmd := common.NewKVCommand(common.CmdPut, args, reply, args.ClientID, args.SN, args.LogID)
 	defer cmd.Finish()
 	cmd.Trace("args: %+v", *args)
@@ -133,7 +155,9 @@ func (kv *RaftKV) OpenSession(args *common.OpenSessionArgs, reply *common.OpenSe
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.clientID++
+	kv.clientSN[kv.clientID] = 0
 	reply.ClientID = kv.clientID
+	kv.persister.StoreInt64(clientIDKey, kv.clientID)
 	return nil
 }
 
@@ -296,6 +320,14 @@ func (kv *RaftKV) String() string {
 	return fmt.Sprintf("RaftKV<%d>", kv.me)
 }
 
+// when restart, restore some persistent info
+func (kv *RaftKV) restore() {
+	clientID, ok := kv.persister.LoadInt64(clientIDKey)
+	if ok {
+		kv.clientID = clientID
+	}
+}
+
 func StartRaftKV(servers []*common.ClientEnd, me int) *RaftKV {
 	glog.Infoln("Creating RaftKV")
 	kv := new(RaftKV)
@@ -315,6 +347,7 @@ func StartRaftKV(servers []*common.ClientEnd, me int) *RaftKV {
 	assertNoError(err)
 	persister := store.MakeRocksBasedPersister(columns[3])
 	kv.rf = raft.NewRaft(servers, me, persister, log, kv.applyCh)
+	kv.persister = persister
 	rpc.Register(kv.rf)
 
 	glog.Infof("Created RaftKV, db: %v, clientDN: %v", kv.store, kv.clientSN)
