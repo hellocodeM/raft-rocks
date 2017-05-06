@@ -1,0 +1,72 @@
+syntax = "proto3";
+package pb;
+import "google/protobuf/timestamp.proto";
+
+// type and interface in RaftKV
+
+enum CommandType {
+    Noop = 0;
+    Get = 1;
+    Put = 2;
+}
+
+// command for KV, it will be replicated to peers, stored in log, and applied to KVStorage
+message KVCommand {
+    CommandType cmd_type = 1;
+    oneof command {
+        GetReq get_command = 2;
+        PutReq put_command = 3;
+        bytes noop = 4; // payload for test
+    }
+    int32 term = 5;
+    int32 index = 6;
+    google.protobuf.Timestamp timestamp = 7;
+}
+
+message Session {
+    int64 client_id = 1;
+    int64 sn = 2;
+    string log_id = 3;
+}
+
+enum Status {
+    OK = 0;
+    Timeout = 1;
+    NoSuchKey = 2;
+    NotLeader = 3;
+    NoSession = 4;
+}
+
+message GetReq {
+    Session session = 1;
+    string key = 2;
+}
+
+message GetRes {
+    Status status = 1;
+    string value = 2;
+}
+
+message PutReq {
+    Session session = 1;
+    string key = 2;
+    string value = 3;
+}
+
+message PutRes {
+    Status status = 1;
+}
+
+message OpenSessionReq {
+    Session session = 1;
+}
+
+message OpenSessionRes {
+    int64 client_id = 1;
+}
+
+service RaftKV {
+    rpc OpenSession(OpenSessionReq) returns (OpenSessionRes);
+    rpc Put(PutReq) returns (PutRes);
+    rpc Get(GetReq) returns (GetRes);
+}

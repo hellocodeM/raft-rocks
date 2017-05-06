@@ -1,0 +1,36 @@
+syntax = "proto3";
+package pb;
+import "raftkv.proto";
+
+// type and interface in Raft
+
+message AppendEntiresReq {
+    int32 term = 1;
+    int32 leader_id = 2;
+    int32 prev_log_index = 3;
+    int32 prev_log_term = 4;
+    repeated KVCommand log_entries = 5;
+    int32 leader_commit = 6; 
+}
+
+message AppendEntriesRes {
+    int32 term = 1;
+    bool success = 2;
+}
+
+message RequestVoteReq {
+    int32 term = 1;
+    int32 candidate_id = 2;
+    int32 last_log_index = 3;
+    int32 last_log_term = 4;
+}
+
+message RequestVoteRes {
+    int32 term = 1;
+    bool vote_granted = 2;
+}
+
+service Raft {
+    rpc RequestVote(RequestVoteReq) returns (RequestVoteRes);
+    rpc AppendEntires(AppendEntiresReq) returns (AppendEntriesRes);
+}
