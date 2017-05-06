@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HelloCodeMing/raft-rocks/pb"
+	"golang.org/x/net/context"
 	"golang.org/x/net/trace"
 )
 

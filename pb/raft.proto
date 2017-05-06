@@ -30,6 +30,11 @@ message RequestVoteRes {
     bool vote_granted = 2;
 }
 
+enum RaftRole {
+    Follower = 0;
+    Candidate = 1;
+    Leader = 2;
+}
 service Raft {
     rpc RequestVote(RequestVoteReq) returns (RequestVoteRes) {}
     rpc AppendEntries(AppendEntriesReq) returns (AppendEntriesRes) {}

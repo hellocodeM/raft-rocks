@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"net"
+	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
@@ -17,14 +18,17 @@ import (
 )
 
 var (
-	ServerAddr        string
-	Replicas          string
-	SnapshotThreshold int
+	RpcAddr   string
+	Replicas  string
+	DebugAddr string
 )
 
 func init() {
-	flag.StringVar(&ServerAddr, "address", "localhost:10000", "address server listen to")
+	flag.StringVar(&DebugAddr, "debug_address", "localhost:8000", "use for debug, pprof")
+	flag.StringVar(&RpcAddr, "rpc_address", "localhost:10000", "rpc server's address")
 	flag.StringVar(&Replicas, "replicas", "localhost:10000,localhost:10001,localhost:10002", "all replicas in raft group")
+
+	// before shutdown, flush log
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -34,30 +38,36 @@ func init() {
 	}()
 }
 
+// /debug/requests, /debug/pprof, /raft
+func runDebugServer() {
+	http.ListenAndServe(DebugAddr, nil)
+}
+
 func main() {
 	flag.Parse()
-	glog.Infof("Start raftkv at %s", ServerAddr)
-	defer glog.Infof("Stop raft-rocks")
+	glog.Infof("Start raftkv at %s", RpcAddr)
+	go runDebugServer()
 
 	// create clientEnds
-	servers := make([]*utils.ClientEnd, 0, len(Replicas)-1)
+	servers := make([]*utils.ClientEnd, 0, len(Replicas))
 	me := -1
 	for i, replica := range strings.Split(Replicas, ",") {
 		servers = append(servers, utils.MakeClientEnd(replica))
-		if replica == ServerAddr {
+		if replica == RpcAddr {
 			me = i
 		}
 	}
 	if me == -1 {
-		glog.Fatalf("replicas not contains the server itself,this=%s,replicas=%s", ServerAddr, Replicas)
+		glog.Fatalf("replicas does not contains the server itself,this=%s,replicas=%s", RpcAddr, Replicas)
 	}
+
 	// start server
-	raftkv := raftkv.StartRaftKV(servers, me)
-	lis, err := net.Listen("tcp", ServerAddr)
+	server := grpc.NewServer()
+	raftkv := raftkv.StartRaftKV(server, servers, me)
+	lis, err := net.Listen("tcp", RpcAddr)
 	if err != nil {
 		glog.Fatal(err)
 	}
-	server := grpc.NewServer()
 	pb.RegisterRaftKVServer(server, raftkv)
 	server.Serve(lis)
 }

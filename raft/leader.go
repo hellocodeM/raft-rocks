@@ -14,16 +14,16 @@ import (
 // 4. If exists N > commitIndex, and majority of matchIndex[i] >= N and log[N].term == currentTerm, set commitIndex=N
 // So, use replicator to maintain connection between followers, including send heartbeat and replicate log.
 func (rf *Raft) doLeader() {
-	glog.Infof("%s Become leader", rf.stateString())
+	glog.Infof("%s Become leader", rf)
 
 	rf.state.becomeLeader()
 	peerChs := make([]chan struct{}, len(rf.peers))
 	defer func() {
-		glog.Infof("%s Before leader quit, notify all peers to quit", rf.stateString())
+		glog.Infof("%s Before leader quit, notify all peers to quit", rf)
 		for _, peerCh := range peerChs {
 			close(peerCh)
 		}
-		glog.Infof("%s Leader quit.", rf.stateString())
+		glog.Infof("%s Leader quit.", rf)
 	}()
 
 	for peer := range peerChs {
@@ -65,7 +65,7 @@ func drainOut(ch <-chan int) {
 
 // replicator: trigger by peerCh, replicate log until nextIndex to each peer
 func (rf *Raft) replicator(peer int, lastIndexCh <-chan struct{}) {
-	glog.V(utils.VDebug).Infof("%s Replicator for peer<%d>", rf.stateString(), peer)
+	glog.V(utils.VDebug).Infof("%s Replicator for peer<%d>", rf, peer)
 	defer glog.V(utils.VDebug).Infof("Replicator of peer<%d> quit", peer)
 	if peer == rf.me {
 		rf.localReplicator(lastIndexCh)
@@ -78,9 +78,9 @@ func (rf *Raft) replicator(peer int, lastIndexCh <-chan struct{}) {
 			if !more {
 				return
 			}
-			glog.V(utils.VDebug).Infof("%s Replicate log to peer<%d>", rf.stateString(), peer)
+			glog.V(utils.VDebug).Infof("%s Replicate log to peer<%d>", rf, peer)
 		case <-time.After(heartbeatTO):
-			glog.V(utils.VDebug).Infof("%s Send heartbeat to peer<%d>", rf.stateString(), peer)
+			glog.V(utils.VDebug).Infof("%s Send heartbeat to peer<%d>", rf, peer)
 		}
 		rf.replicateLog(peer, &retreatCnt)
 	}

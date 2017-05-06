@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"time"
@@ -9,6 +8,7 @@ import (
 	"github.com/HelloCodeMing/raft-rocks/pb"
 	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
+	"golang.org/x/net/context"
 	"golang.org/x/net/trace"
 )
 
@@ -104,11 +104,11 @@ func (rf *Raft) sendRequestVote(peer int, req *pb.RequestVoteReq) (*pb.RequestVo
 
 func (rf *Raft) requestingVote(votedCh chan<- bool) {
 	if len(rf.peers) == 1 {
-		glog.Infoln(rf.stateString(), " Single node, be leader directly")
+		glog.Infoln(rf, " Single node, be leader directly")
 		votedCh <- true
 		return
 	}
-	glog.Infoln(rf.stateString(), " Requesting votes in parallel")
+	glog.Infoln(rf, " Requesting votes in parallel")
 
 	term := rf.state.getTerm()
 	lastIndex := rf.log.LastIndex()

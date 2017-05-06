@@ -1,13 +1,13 @@
 package raft
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
-	"encoding/json"
-
+	"github.com/HelloCodeMing/raft-rocks/pb"
 	"github.com/HelloCodeMing/raft-rocks/store"
 	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
@@ -23,7 +23,7 @@ type raftState struct {
 	Me       int
 	NumPeers int
 
-	Role        raftRole
+	Role        pb.RaftRole
 	CurrentTerm int32
 	VotedFor    int32
 
@@ -47,7 +47,7 @@ type raftState struct {
 	readLease time.Time
 }
 
-func (s *raftState) getRole() raftRole {
+func (s *raftState) getRole() pb.RaftRole {
 	s.RLock()
 	defer s.RUnlock()
 	return s.Role
@@ -133,13 +133,7 @@ func (s *raftState) checkApply() {
 			panic(rf.String())
 		}
 		entry := rf.log.At(s.LastApplied)
-		msg := ApplyMsg{
-			Index:       int32(s.LastApplied),
-			Command:     entry,
-			Term:        entry.Term,
-			UseSnapshot: false,
-			Snapshot:    []byte{},
-		}
+		msg := ApplyMsg{Command: entry}
 		rf.applyCh <- msg
 	}
 	if s.LastApplied > old {
@@ -147,7 +141,7 @@ func (s *raftState) checkApply() {
 	}
 }
 
-func (s *raftState) changeRole(role raftRole) {
+func (s *raftState) changeRole(role pb.RaftRole) {
 	s.Lock()
 	defer s.Unlock()
 	s.Role = role
@@ -157,7 +151,7 @@ func (s *raftState) changeRole(role raftRole) {
 func (s *raftState) becomeFollowerUnlocked(candidateID int32, term int32) {
 	s.CurrentTerm = term
 	s.VotedFor = candidateID
-	s.Role = follower
+	s.Role = pb.RaftRole_Follower
 	s.persist()
 }
 
@@ -166,14 +160,14 @@ func (s *raftState) becomeFollower(candidateID int32, term int32) {
 	defer s.Unlock()
 	s.CurrentTerm = term
 	s.VotedFor = candidateID
-	s.Role = follower
+	s.Role = pb.RaftRole_Follower
 	s.persist()
 }
 
 func (s *raftState) becomeCandidate() int32 {
 	s.Lock()
 	defer s.Unlock()
-	s.Role = candidate
+	s.Role = pb.RaftRole_Candidate
 	s.CurrentTerm++
 	s.VotedFor = int32(s.Me)
 	s.persist()
@@ -183,7 +177,7 @@ func (s *raftState) becomeCandidate() int32 {
 func (s *raftState) becomeLeader() {
 	s.Lock()
 	defer s.Unlock()
-	s.Role = leader
+	s.Role = pb.RaftRole_Leader
 	s.MatchIndex = make([]int, s.NumPeers)
 	s.NextIndex = make([]int, s.NumPeers)
 }
@@ -277,7 +271,7 @@ func makeRaftState(raft *Raft, persister store.Persister, numPeers int, me int) 
 		Me:          me,
 		CurrentTerm: 0,
 		VotedFor:    -1,
-		Role:        follower,
+		Role:        pb.RaftRole_Follower,
 		readLease:   time.Now(),
 		persister:   persister,
 	}
