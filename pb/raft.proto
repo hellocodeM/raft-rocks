@@ -4,7 +4,7 @@ import "raftkv.proto";
 
 // type and interface in Raft
 
-message AppendEntiresReq {
+message AppendEntriesReq {
     int32 term = 1;
     int32 leader_id = 2;
     int32 prev_log_index = 3;
@@ -31,6 +31,6 @@ message RequestVoteRes {
 }
 
 service Raft {
-    rpc RequestVote(RequestVoteReq) returns (RequestVoteRes);
-    rpc AppendEntires(AppendEntiresReq) returns (AppendEntriesRes);
+    rpc RequestVote(RequestVoteReq) returns (RequestVoteRes) {}
+    rpc AppendEntries(AppendEntriesReq) returns (AppendEntriesRes) {}
 }

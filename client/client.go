@@ -8,8 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/pb"
+	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -39,7 +42,8 @@ func init() {
 type Clerk struct {
 	serverAddrs   []string
 	currentServer int
-	client        *common.ClientEnd
+	connection    *grpc.ClientConn
+	client        pb.RaftKVClient
 
 	clientID int64
 	SN       int64
@@ -67,11 +71,16 @@ func (ck *Clerk) openSession() error {
 }
 
 func (ck *Clerk) connect(server string) error {
-	ck.client = common.MakeClientEnd(server)
-	reply := &common.OpenSessionReply{}
-	err := ck.client.Call("RaftKV.OpenSession", &common.OpenSessionArgs{}, reply)
-	if err == nil && reply.Status == common.OK {
-		ck.clientID = reply.ClientID
+	var err error
+	ck.connection, err = grpc.Dial(server, grpc.WithInsecure())
+	if err != nil {
+		glog.Warningf("connect to %s failed: %s", server, err)
+		return err
+	}
+	ck.client = pb.NewRaftKVClient(ck.connection)
+	res, err := ck.client.OpenSession(context.Background(), &pb.OpenSessionReq{})
+	if err == nil {
+		ck.clientID = res.ClientId
 		glog.Infof("Clerk connect to %s succeed", server)
 		return nil
 	}
@@ -80,68 +89,72 @@ func (ck *Clerk) connect(server string) error {
 }
 
 func (ck *Clerk) closeSession() {
-	if ck.client != nil {
-		ck.client.Close()
+	if ck.connection != nil {
+		ck.connection.Close()
 	}
 }
 
-func (ck *Clerk) genGetArgs(key string) *common.GetArgs {
+func (ck *Clerk) genGetArgs(key string) *pb.GetReq {
 	ck.SN++
-	args := &common.GetArgs{Key: key}
-	args.ClientID = ck.clientID
-	args.LogID = common.GenLogID()
-	args.SN = ck.SN
+	args := &pb.GetReq{Key: key}
+	args.Session = &pb.Session{}
+	args.Session.ClientId = ck.clientID
+	args.Session.LogId = utils.GenLogID()
+	args.Session.Sn = ck.SN
 	return args
 }
 
 // Get get a key/value
 func (ck *Clerk) Get(key string) (string, bool) {
 	args := ck.genGetArgs(key)
-	glog.Infof("%s Getting: {k:%s}", args.LogID, key)
+	glog.Infof("%v Getting: {k:%s}", args.Session, key)
 	for r := 0; r < len(ck.serverAddrs); r++ {
-		reply := &common.GetReply{}
-		err := ck.client.Call("RaftKV.Get", &args, reply)
-		if err == nil && reply.Status == common.OK {
-			return reply.Value, true
-		} else if reply.Status == common.ErrNoKey {
+		res, err := ck.client.Get(context.Background(), args)
+		if err != nil {
+			return "", false
+		}
+		if res.Status == pb.Status_OK {
+			return res.Value, true
+		} else if res.Status == pb.Status_NoSuchKey {
 			return "", false
 		}
 
-		ck.handleError(err, reply.Status)
+		ck.handleError(err, res.Status)
 	}
 	glog.Errorf("Try many times but failed")
 	return "", false
 }
 
-func (ck *Clerk) genPutArgs(key, value string) *common.PutArgs {
+func (ck *Clerk) genPutArgs(key, value string) *pb.PutReq {
 	ck.SN++
-	args := &common.PutArgs{
-		Key:   key,
-		Value: value,
-	}
-	args.ClientID = ck.clientID
-	args.SN = ck.SN
-	args.LogID = common.GenLogID()
+	args := &pb.PutReq{Key: key, Value: value}
+	args.Session = &pb.Session{}
+	args.Session.ClientId = ck.clientID
+	args.Session.Sn = ck.SN
+	args.Session.LogId = utils.GenLogID()
 	return args
 }
 
 func (ck *Clerk) Put(key, value string) {
 	args := ck.genPutArgs(key, value)
-	glog.Infof("%s Putting: {k:%s, v:%s}", args.LogID, key, value)
+	glog.Infof("%s Putting: {k:%s, v:%s}", args.Session, key, value)
 	for r := 0; r < len(ck.serverAddrs); r++ {
-		reply := &common.PutReply{}
-		err := ck.client.Call("RaftKV.Put", &args, reply)
-		if err == nil && reply.Status == common.OK {
-			return
+		reply, err := ck.client.Put(context.Background(), args)
+		if err != nil {
+			ck.handleError(err, pb.Status_OK)
+		} else {
+			if reply.Status == pb.Status_OK {
+				return
+			}
+			ck.handleError(err, reply.Status)
 		}
-		ck.handleError(err, reply.Status)
 	}
 }
 
-func (ck *Clerk) handleError(rpcErr error, err common.ClerkResult) {
+func (ck *Clerk) handleError(rpcErr error, err pb.Status) {
 	if rpcErr != nil {
 		glog.Warning("rpc error,error=", rpcErr)
-	} else if err != common.OK {
+	} else if err != pb.Status_OK {
 		glog.Warning(err)
 	}
 	ck.rollLeader()

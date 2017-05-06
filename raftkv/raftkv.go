@@ -10,10 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/pb"
 	"github.com/HelloCodeMing/raft-rocks/raft"
 	"github.com/HelloCodeMing/raft-rocks/store"
+	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
+	"golang.org/x/net/context"
 	"golang.org/x/net/trace"
 )
 
@@ -36,8 +38,8 @@ func init() {
 
 // errors
 var (
-	errNotLeader = errors.New("not leader")
-	errTimeout   = errors.New("operation timeout")
+	errNotLeader = errors.New("RaftKV not leader")
+	errTimeout   = errors.New("RaftKV operation timeout")
 )
 
 const (
@@ -54,7 +56,7 @@ type RaftKV struct {
 
 	store     store.KVStorage
 	persister store.Persister
-	waiting   map[int]chan *common.KVCommand
+	waiting   map[int]chan interface{}
 
 	clientSN map[int64]int64 // client SN should be incremental, otherwise the command will be ignored
 	clientID int64           // this field need to be persist
@@ -69,32 +71,55 @@ func (kv *RaftKV) doPut(key string, value string) {
 	kv.store.Put(key, value)
 }
 
-func (kv *RaftKV) isUniqueSN(clientID int64, SN int64) bool {
-	if SN <= kv.clientSN[clientID] {
+func (kv *RaftKV) isUnique(cmd *pb.KVCommand) bool {
+	var session *pb.Session
+	switch cmd.GetCmdType() {
+	case pb.CommandType_Get:
+		session = cmd.GetGetCommand().Session
+	case pb.CommandType_Put:
+		session = cmd.GetPutCommand().Session
+	case pb.CommandType_Noop:
+		panic("not implemented")
+	default:
+		panic("not implemented")
+	}
+
+	SN := session.Sn
+	if SN <= kv.clientSN[session.ClientId] {
 		return false
 	}
-	kv.clientSN[clientID] = SN
+	kv.clientSN[session.ClientId] = SN
 	return true
 }
 
-func hashCommand(cmd *common.KVCommand) int {
-	return int(cmd.ClientID + cmd.SN*1E4)
+func hashCommand(cmd *pb.KVCommand) int {
+	switch cmd.GetCmdType() {
+	case pb.CommandType_Get:
+		session := cmd.GetGetCommand().Session
+		return int(session.ClientId + session.Sn*1E4)
+	case pb.CommandType_Put:
+		session := cmd.GetPutCommand().Session
+		return int(session.ClientId + session.Sn*1E4)
+	case pb.CommandType_Noop:
+		panic("not implemented")
+	default:
+		panic("not implemented")
+	}
 }
 
 // TODO: wait and notify is too decoupled, may be we could achieve it with a channel?
 // Get/PutAppend wait for command applied
 // Command could be submit many times, it should be idempotent.
-// Command could be identified by <ClientID, SN>
+// Command could be identified by <ClientId, SN>
 // one command could appear in multi log index, meanwhile on log index could represent multi command, the relationship is N to N.
-func (kv *RaftKV) waitFor(cmd *common.KVCommand) error {
+func (kv *RaftKV) waitFor(cmd *pb.KVCommand) (out interface{}, err error) {
 	kv.mu.Lock()
 	hashVal := hashCommand(cmd)
-	kv.waiting[hashVal] = make(chan *common.KVCommand, 1)
+	kv.waiting[hashVal] = make(chan interface{}, 1)
 	kv.mu.Unlock()
-	var err error
 	select {
 	case res := <-kv.waiting[hashVal]:
-		cmd.Res = res.Res
+		out = res
 		err = nil
 	case <-time.After(OpTimeout):
 		err = errTimeout
@@ -102,134 +127,141 @@ func (kv *RaftKV) waitFor(cmd *common.KVCommand) error {
 	kv.mu.Lock()
 	delete(kv.waiting, hashVal)
 	kv.mu.Unlock()
-	return err
+	return
 }
 
-func (kv *RaftKV) notify(cmd *common.KVCommand) {
+func (kv *RaftKV) notify(cmd *pb.KVCommand, res interface{}) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	hashVal := hashCommand(cmd)
 	if ch, ok := kv.waiting[hashVal]; ok {
-		ch <- cmd
+		ch <- res
 	} else {
 		glog.Warning("Try to finish a non-exist command, it may timeout: ", cmd)
 	}
 }
 
-func (kv *RaftKV) checkSession(clientID int64) common.ClerkResult {
-	if _, ok := kv.clientSN[clientID]; !ok {
-		return common.ErrNoSession
+func (kv *RaftKV) checkSession(session *pb.Session) bool {
+	if _, ok := kv.clientSN[session.ClientId]; !ok {
+		return false
 	}
-	return common.OK
+	return true
 }
 
-func (kv *RaftKV) Get(args *common.GetArgs, reply *common.GetReply) error {
-	if kv.checkSession(args.ClientID) != common.OK {
-		reply.Status = common.ErrNoSession
-		return nil
+func (kv *RaftKV) Get(ctx context.Context, req *pb.GetReq) (*pb.GetRes, error) {
+	if !kv.checkSession(req.Session) {
+		res := &pb.GetRes{Status: pb.Status_NoSession}
+		return res, nil
 	}
-	cmd := common.NewKVCommand(common.CmdGet, args, reply, args.ClientID, args.SN, args.LogID)
-	defer cmd.Finish()
-	cmd.Trace("args: %+v", *args)
-	err := kv.submitCommand(cmd)
-	// TODO: reply is just a pointer in command, command will be serialized and deserialized,
-	// so this pointer in resulted cmd will points to different address
-	// a work-around for this is to do a deep-copy for this field,
-	// but we need a more elegant way
-	*reply = *cmd.Res.(*common.GetReply)
-	return err
+	cmd := &pb.KVCommand{}
+	cmd.CmdType = pb.CommandType_Get
+	cmd.Command = &pb.KVCommand_GetCommand{GetCommand: req}
+	res, err := kv.submitCommand(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+	return res.(*pb.GetRes), err
 }
 
-func (kv *RaftKV) Put(args *common.PutArgs, reply *common.PutReply) error {
-	if kv.checkSession(args.ClientID) != common.OK {
-		reply.Status = common.ErrNoSession
-		return nil
+func (kv *RaftKV) Put(ctx context.Context, req *pb.PutReq) (*pb.PutRes, error) {
+	if !kv.checkSession(req.Session) {
+		res := &pb.PutRes{Status: pb.Status_NoSession}
+		return res, nil
 	}
-	cmd := common.NewKVCommand(common.CmdPut, args, reply, args.ClientID, args.SN, args.LogID)
-	defer cmd.Finish()
-	cmd.Trace("args: %+v", *args)
-	return kv.submitCommand(cmd)
+	cmd := &pb.KVCommand{}
+	cmd.CmdType = pb.CommandType_Put
+	cmd.Command = &pb.KVCommand_PutCommand{PutCommand: req}
+	res, err := kv.submitCommand(ctx, cmd)
+	if err != nil {
+		return nil, err
+	}
+	return res.(*pb.PutRes), err
 }
 
-func (kv *RaftKV) OpenSession(args *common.OpenSessionArgs, reply *common.OpenSessionReply) error {
+func (kv *RaftKV) OpenSession(ctx context.Context, req *pb.OpenSessionReq) (*pb.OpenSessionRes, error) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.clientID++
 	kv.clientSN[kv.clientID] = 0
-	reply.ClientID = kv.clientID
+	res := &pb.OpenSessionRes{ClientId: kv.clientID}
 	kv.persister.StoreInt64(clientIDKey, kv.clientID)
-	return nil
+	return res, nil
 }
 
-func (kv *RaftKV) submitCommand(cmd *common.KVCommand) error {
-	cmd.Trace("Submit command to raft")
+func (kv *RaftKV) submitCommand(ctx context.Context, cmd *pb.KVCommand) (interface{}, error) {
+	glog.Infof("Submit command to raft")
 	_, _, isLeader := kv.rf.SubmitCommand(cmd)
 	if !isLeader {
-		cmd.Trace("peer<%d> not leader, finish this operation", kv.me)
-		return errNotLeader
+		// cmd.Trace("peer<%d> not leader, finish this operation", kv.me)
+		return nil, errNotLeader
 	}
-	err := kv.waitFor(cmd)
-	return err
+	return kv.waitFor(cmd)
 }
 
-func (kv *RaftKV) applyCommand(msg raft.ApplyMsg) {
+func (kv *RaftKV) applyCommand(msg raft.ApplyMsg) interface{} {
 	glog.Infof("Apply command at index %d to SM", msg.Index)
 	cmd := msg.Command
-	cmd.Trace("Apply start: %+v", cmd)
+	// cmd.Trace("Apply start: %+v", cmd)
 
-	if cmd.CmdType != common.CmdGet && !kv.isUniqueSN(cmd.ClientID, cmd.SN) { // ignore duplicate command
-		cmd.Trace("Dup command, ignore")
-		return
+	if cmd.CmdType != pb.CommandType_Get && !kv.isUnique(cmd) { // ignore duplicate command
+		// cmd.Trace("Dup command, ignore")
+		return nil
 	}
+	var ret interface{}
 	switch cmd.CmdType {
-	case common.CmdGet:
-		req := cmd.Req.(*common.GetArgs)
-		res := cmd.Res.(*common.GetReply)
+	case pb.CommandType_Get:
+		req := cmd.GetGetCommand()
+		res := &pb.GetRes{}
+		ret = res
 		value, ok := kv.doGet(req.Key)
 		if ok {
-			res.Status = common.OK
+			res.Status = pb.Status_OK
 			res.Value = value
-			cmd.Trace("Apply command, get key=%s,value=%s", req.Key, res.Value)
+			// cmd.Trace("Apply command, get key=%s,value=%s", req.Key, res.Value)
 		} else {
-			res.Status = common.ErrNoKey
-			cmd.Trace("Apply command, get key=%s,err=%s", req.Key, res.Status)
+			res.Status = pb.Status_NoSuchKey
+			// cmd.Trace("Apply command, get key=%s,err=%s", req.Key, res.Status)
 		}
-	case common.CmdPut:
-		req := cmd.Req.(*common.PutArgs)
-		res := cmd.Res.(*common.PutReply)
+	case pb.CommandType_Put:
+		req := cmd.GetPutCommand()
+		res := &pb.PutRes{}
+		ret = res
 		kv.doPut(req.Key, req.Value)
-		res.Status = common.OK
-		cmd.Trace("Apply command, put key=%s,value=%s", req.Key, req.Value)
-	case common.CmdNoop:
+		res.Status = pb.Status_OK
+		// cmd.Trace("Apply command, put key=%s,value=%s", req.Key, req.Value)
+		return res
+	case pb.CommandType_Noop:
+		panic("not implemented")
 	}
 	// update read lease
 	start := time.Unix(cmd.Timestamp/1E9, cmd.Timestamp%1E9)
 	start = start.Add(time.Second)
 	// TODO use flag
 	kv.rf.UpdateReadLease(msg.Term, start)
+	return ret
 }
 
 func (kv *RaftKV) doApply() {
-	glog.V(common.VDebug).Infof("%s Applier start", kv.String())
-	defer glog.V(common.VDebug).Infof("%s Applier quit", kv.String())
+	glog.V(utils.VDebug).Infof("%s Applier start", kv.String())
+	defer glog.V(utils.VDebug).Infof("%s Applier quit", kv.String())
 
 	for {
 		select {
 		case msg := <-kv.applyCh:
 			if msg.UseSnapshot {
-				glog.V(common.VDebug).Infof("%s Receive snapshot, lastIncludedIndex=%d", kv.String(), msg.Index)
+				glog.V(utils.VDebug).Infof("%s Receive snapshot, lastIncludedIndex=%d", kv.String(), msg.Index)
 				s := raft.Snapshot{}
 				buf := bytes.NewReader(msg.Snapshot)
 				s.Decode(buf)
 				kv.takeSnapshot(&s)
 			} else {
-				glog.V(common.VDump).Infof("%s Receive command: %+v", kv.String(), msg)
+				glog.V(utils.VDump).Infof("%s Receive command: %+v", kv.String(), msg)
 				if msg.Command == nil {
 					log.Println(kv.rf)
 					panic("Should not receive empty command")
 				}
-				kv.applyCommand(msg)
-				kv.notify(msg.Command)
+				res := kv.applyCommand(msg)
+				kv.notify(msg.Command, res)
 			}
 		case <-kv.stopCh:
 			return
@@ -328,7 +360,7 @@ func (kv *RaftKV) restore() {
 	}
 }
 
-func StartRaftKV(servers []*common.ClientEnd, me int) *RaftKV {
+func StartRaftKV(servers []*utils.ClientEnd, me int) *RaftKV {
 	glog.Infoln("Creating RaftKV")
 	kv := new(RaftKV)
 	kv.me = me
@@ -337,7 +369,7 @@ func StartRaftKV(servers []*common.ClientEnd, me int) *RaftKV {
 	kv.stopCh = make(chan bool)
 	kv.clientSN = make(map[int64]int64)
 	kv.logger = trace.NewEventLog("RaftKV", fmt.Sprintf("peer<%d>", me))
-	kv.waiting = make(map[int]chan *common.KVCommand)
+	kv.waiting = make(map[int]chan interface{})
 
 	_, columns, err := store.OpenTable(StoragePath, []string{"default", "kv", "log", "meta"})
 	assertNoError(err)

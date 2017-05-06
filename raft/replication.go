@@ -1,13 +1,14 @@
 package raft
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"sync/atomic"
 	"time"
 
-	. "github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/pb"
 	"golang.org/x/net/trace"
 )
 
@@ -21,33 +22,19 @@ func init() {
 	flag.DurationVar(&heartbeatTO, "leader_heartbeat", 500*time.Millisecond, "leader heartbeat interval")
 }
 
-type AppendEntriesArgs struct {
-	Term         int32      // leader's term
-	LeaderID     int32      // so follower can redirect clients
-	PrevLogIndex int        // index of log entry preceding new one
-	PrevLogTerm  int32      // term of prevLogIndex entry
-	Entries      []LogEntry // entries to store, empty for heartbeat
-	LeaderCommit int        // leader's commitIndex
-}
-
-type AppendEntriesReply struct {
-	Term    int32 // currentTerm, for leader to update itself
-	Success bool  // true if follower contained entry matching prevLogIndex and prevLogTerm
-}
-
 type AppendEntriesSession struct {
-	args  *AppendEntriesArgs
-	reply *AppendEntriesReply
+	args  *pb.AppendEntriesReq
+	reply *pb.AppendEntriesRes
 	tr    trace.Trace
 	done  chan bool
 	me    int
 }
 
-func NewAppendEntriesSession(me int, term int32, args *AppendEntriesArgs, reply *AppendEntriesReply) *AppendEntriesSession {
+func NewAppendEntriesSession(me int, term int32, req *pb.AppendEntriesReq, res *pb.AppendEntriesRes) *AppendEntriesSession {
 	tr := trace.New("Raft.AppendEntries", fmt.Sprintf("peer<%d,%d>", me, term))
 	return &AppendEntriesSession{
-		args:  args,
-		reply: reply,
+		args:  req,
+		reply: res,
 		tr:    tr,
 		done:  make(chan bool, 1),
 		me:    me,
@@ -65,27 +52,30 @@ func (session *AppendEntriesSession) finish() {
 	session.tr.Finish()
 }
 
-func (rf *Raft) sendAppendEntries(peer int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	err := rf.peers[peer].Call("Raft.AppendEntries", args, reply)
-	rf.checkNewTerm(int32(peer), reply.Term)
-	return err == nil
+func (rf *Raft) sendAppendEntries(peer int, req *pb.AppendEntriesReq) (*pb.AppendEntriesRes, error) {
+	res, err := rf.peers[peer].AppendEntries(context.TODO(), req)
+	if err != nil {
+		return res, err
+	}
+	rf.checkNewTerm(int32(peer), res.Term)
+	return res, err
 }
 
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) error {
-	session := NewAppendEntriesSession(rf.me, rf.state.getTerm(), args, reply)
-	session.trace("args: %+v", *args)
-	reply.Success = false
+func (rf *Raft) AppendEntries(ctx context.Context, req *pb.AppendEntriesReq) (res *pb.AppendEntriesRes, err error) {
+	session := NewAppendEntriesSession(rf.me, rf.state.getTerm(), req, res)
+	session.trace("args: %+v", *req)
+	res.Success = false
 	rf.appendEntriesCh <- session
 	<-session.done
 	session.finish()
-	return nil
+	return nil, nil
 }
 
 func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 	args := session.args
 	reply := session.reply
-	rf.checkNewTerm(args.LeaderID, args.Term)
-	if len(args.Entries) == 0 {
+	rf.checkNewTerm(args.LeaderId, args.Term)
+	if len(args.LogEntries) == 0 {
 		session.trace("receive heartbeat")
 	}
 
@@ -99,19 +89,19 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 	reply.Success = false
 	if args.Term < term {
 		session.trace("Reject due to term: %d<%d", args.Term, term)
-	} else if args.PrevLogIndex <= rf.lastIncludedIndex {
+	} else if int(args.PrevLogIndex) <= rf.lastIncludedIndex {
 		session.trace("Accept, prevLogIndex cover discarded log")
 		reply.Success = true
-		offset := rf.lastIncludedIndex - args.PrevLogIndex
-		if 0 <= offset && offset < len(args.Entries) {
-			rf.log.AppendAt(rf.lastIncludedIndex+1, args.Entries[offset:])
+		offset := rf.lastIncludedIndex - int(args.PrevLogIndex)
+		if 0 <= offset && offset < len(args.LogEntries) {
+			rf.log.AppendAt(rf.lastIncludedIndex+1, args.LogEntries[offset:])
 		}
-	} else if args.PrevLogIndex <= rf.log.LastIndex() {
-		t := rf.log.At(args.PrevLogIndex).Term
+	} else if int(args.PrevLogIndex) <= rf.log.LastIndex() {
+		t := rf.log.At(int(args.PrevLogIndex)).Term
 		if t == args.PrevLogTerm {
 			session.trace("Accept, append log at %d", args.PrevLogIndex+1)
 			reply.Success = true
-			rf.log.AppendAt(args.PrevLogIndex+1, args.Entries)
+			rf.log.AppendAt(int(args.PrevLogIndex)+1, args.LogEntries)
 		} else {
 			session.trace("Reject due to term mismatch at log[%d]: %d!=%d", args.PrevLogIndex, args.PrevLogTerm, t)
 		}
@@ -120,8 +110,8 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 	}
 
 	if reply.Success {
-		lastNewEntry := args.PrevLogIndex + len(args.Entries)
-		if lastNewEntry > rf.state.getCommied() && rf.state.checkFollowerCommit(args.LeaderCommit) {
+		lastNewEntry := int(args.PrevLogIndex) + len(args.LogEntries)
+		if lastNewEntry > rf.state.getCommied() && rf.state.checkFollowerCommit(int(args.LeaderCommit)) {
 			session.trace("Follower update commitIndex: commitIndex: %d", rf.state.getCommied())
 		}
 	}
@@ -144,19 +134,19 @@ func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 		prevTerm = rf.log.At(prevIndex).Term
 	}
 
-	args := &AppendEntriesArgs{
+	args := &pb.AppendEntriesReq{
 		Term:         rf.state.getTerm(),
-		LeaderID:     int32(rf.me),
-		PrevLogIndex: prevIndex,
+		LeaderId:     int32(rf.me),
+		PrevLogIndex: int32(prevIndex),
 		PrevLogTerm:  prevTerm,
-		LeaderCommit: rf.state.getCommied(),
+		LeaderCommit: int32(rf.state.getCommied()),
 	}
 	if toReplicate <= lastIndex {
 		// big step to mix up, small step when retreating
 		if atomic.LoadInt32(retreatCnt) > 0 {
-			args.Entries = rf.log.Slice(toReplicate, toReplicate+1)
+			args.LogEntries = rf.log.Slice(toReplicate, toReplicate+1)
 		} else {
-			args.Entries = rf.log.Slice(toReplicate, rf.log.LastIndex()+1)
+			args.LogEntries = rf.log.Slice(toReplicate, rf.log.LastIndex()+1)
 		}
 		isHeartBeat = false
 	} else {
@@ -164,15 +154,14 @@ func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 	}
 	rf.state.RUnlock()
 
-	reply := new(AppendEntriesReply)
-	ok := rf.sendAppendEntries(peer, args, reply)
-	if ok {
-		if reply.Success {
+	res, err := rf.sendAppendEntries(peer, args)
+	if err == nil {
+		if res.Success {
 			*retreatCnt = 1
 			atomic.StoreInt32(retreatCnt, 0)
 			if !isHeartBeat {
-				rf.state.replicatedToPeer(peer, args.PrevLogIndex+len(args.Entries))
-				rf.logInfo("Replicate entry successfully, {peer:%d, index: %d, entries: %v}", peer, toReplicate, args.Entries)
+				rf.state.replicatedToPeer(peer, int(args.PrevLogIndex)+len(args.LogEntries))
+				rf.logInfo("Replicate entry successfully, {peer:%d, index: %d, entries: %v}", peer, toReplicate, args.LogEntries)
 			}
 		} else {
 			index := rf.state.retreatForPeer(peer)

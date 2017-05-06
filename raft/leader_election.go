@@ -1,11 +1,13 @@
 package raft
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"time"
 
-	"github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/pb"
+	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
 	"golang.org/x/net/trace"
 )
@@ -20,26 +22,14 @@ func init() {
 	flag.DurationVar(&electionTimeoutMax, "election_max", 2*time.Second, "maximum duration of election timeout")
 }
 
-type RequestVoteArgs struct {
-	Term         int32
-	CandidateID  int32
-	LastLogIndex int
-	LastLogTerm  int32
-}
-
-type RequestVoteReply struct {
-	Term        int32 // currentTerm, for candidate to update itself
-	VoteGranted bool  // whether receive vote
-}
-
 type RequestVoteSession struct {
-	args  *RequestVoteArgs
-	reply *RequestVoteReply
+	args  *pb.RequestVoteReq
+	reply *pb.RequestVoteRes
 	tr    trace.Trace
 	done  chan bool
 }
 
-func NewRequestVoteSession(me int, args *RequestVoteArgs, reply *RequestVoteReply) *RequestVoteSession {
+func NewRequestVoteSession(me int, args *pb.RequestVoteReq, reply *pb.RequestVoteRes) *RequestVoteSession {
 	tr := trace.New("Raft.RequestVote", fmt.Sprintf("peer<%d>", me))
 	return &RequestVoteSession{
 		args:  args,
@@ -51,64 +41,65 @@ func NewRequestVoteSession(me int, args *RequestVoteArgs, reply *RequestVoteRepl
 
 func (session *RequestVoteSession) trace(format string, arg ...interface{}) {
 	session.tr.LazyPrintf(format, arg...)
-	glog.V(common.VDump).Infof("tracing RequestVote: %s", fmt.Sprintf(format, arg...))
+	glog.V(utils.VDump).Infof("tracing RequestVote: %s", fmt.Sprintf(format, arg...))
 }
 
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error {
-	s := NewRequestVoteSession(rf.me, args, reply)
-	s.trace("args: %+v", *args)
-	reply.VoteGranted = false
+func (rf *Raft) RequestVote(ctx context.Context, req *pb.RequestVoteReq) (res *pb.RequestVoteRes, err error) {
+	s := NewRequestVoteSession(rf.me, req, res)
+	s.trace("args: %+v", *req)
+	res.VoteGranted = false
 	rf.requestVoteChan <- s
 	<-s.done
+
 	s.tr.Finish()
-	return nil
+	return nil, nil
 }
 
 func (rf *Raft) processRequestVote(session *RequestVoteSession) {
 	args := session.args
 	reply := session.reply
-	rf.checkNewTerm(args.CandidateID, args.Term)
+	rf.checkNewTerm(args.CandidateId, args.Term)
 
 	rf.state.Lock()
 	defer rf.state.Unlock()
 	voteFor := rf.state.VotedFor
-	voteForOk := voteFor == -1 || voteFor == args.CandidateID
+	voteForOk := voteFor == -1 || voteFor == args.CandidateId
 	var lastTerm int32
 	if rf.lastIncludedIndex < rf.log.LastIndex() {
 		lastTerm = rf.log.Last().Term
 	} else {
 		lastTerm = rf.lastIncludedTerm
 	}
-	logOk := args.LastLogTerm > lastTerm || (args.LastLogTerm == lastTerm && args.LastLogIndex >= rf.log.LastIndex())
+	logOk := args.LastLogTerm > lastTerm || (args.LastLogTerm == lastTerm && int(args.LastLogIndex) >= rf.log.LastIndex())
 
 	reply.Term = rf.state.CurrentTerm
 	if args.Term >= rf.state.CurrentTerm && voteForOk && logOk {
-		rf.state.becomeFollowerUnlocked(args.CandidateID, args.Term)
+		rf.state.becomeFollowerUnlocked(args.CandidateId, args.Term)
 		reply.VoteGranted = true
-		session.trace("GrantVote to candidate<%d,%d>", args.CandidateID, args.Term)
+		session.trace("GrantVote to candidate<%d,%d>", args.CandidateId, args.Term)
 	} else {
 		reply.VoteGranted = false
 		if args.Term < rf.state.CurrentTerm {
 			session.trace("Not grant vote to <%d,%d>, because term %d < %d", args.Term, rf.state.CurrentTerm)
 		}
 		if !voteForOk {
-			session.trace("Not grant vote to <%d,%d>, because votedFor: %d", args.CandidateID, args.Term, voteFor)
+			session.trace("Not grant vote to <%d,%d>, because votedFor: %d", args.CandidateId, args.Term, voteFor)
 		}
 		if !logOk {
-			session.trace("Not grant vote to <%d,%d>, because logMismatch: %v", args.CandidateID, args.Term, rf.log)
+			session.trace("Not grant vote to <%d,%d>, because logMismatch: %v", args.CandidateId, args.Term, rf.log)
 		}
 	}
 	session.done <- true
 }
 
-func (rf *Raft) sendRequestVote(peer int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	err := rf.peers[peer].Call("Raft.RequestVote", args, reply)
+func (rf *Raft) sendRequestVote(peer int, req *pb.RequestVoteReq) (*pb.RequestVoteRes, error) {
+	res, err := rf.peers[peer].RequestVote(context.TODO(), req)
 	if err != nil {
 		glog.Warningf("Call peer<%d>'s Raft.RequestVote failed,error=%v", peer, err)
-		return false
+		return res, err
 	}
-	rf.checkNewTerm(int32(peer), reply.Term)
-	return err == nil
+	rf.checkNewTerm(int32(peer), res.Term)
+	return res, err
 }
 
 func (rf *Raft) requestingVote(votedCh chan<- bool) {
@@ -127,18 +118,18 @@ func (rf *Raft) requestingVote(votedCh chan<- bool) {
 	} else {
 		lastTerm = rf.lastIncludedTerm
 	}
-	args := &RequestVoteArgs{
+	args := &pb.RequestVoteReq{
 		Term:         term,
-		CandidateID:  int32(rf.me),
-		LastLogIndex: lastIndex,
+		CandidateId:  int32(rf.me),
+		LastLogIndex: int32(lastIndex),
 		LastLogTerm:  lastTerm,
 	}
 
 	grantedCh := make(chan bool, len(rf.peers)-1)
 	rf.foreachPeer(func(peer int) {
 		go func() {
-			reply := new(RequestVoteReply)
-			if rf.sendRequestVote(peer, args, reply) && reply.VoteGranted {
+			res, err := rf.sendRequestVote(peer, args)
+			if err == nil && res.VoteGranted {
 				grantedCh <- true
 			} else {
 				grantedCh <- false

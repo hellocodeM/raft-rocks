@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/HelloCodeMing/raft-rocks/common"
-	. "github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/pb"
 	"github.com/HelloCodeMing/raft-rocks/store"
+	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
 	"golang.org/x/net/trace"
 )
@@ -25,16 +25,16 @@ func init() {
 }
 
 type ApplyMsg struct {
-	Index       int
+	Index       int32
 	Term        int32
-	Command     *common.KVCommand
+	Command     *pb.KVCommand
 	UseSnapshot bool   // ignore for lab2; only used in lab3
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
 
 // Raft A Go object implementing a single Raft peer.
 type Raft struct {
-	peers []*common.ClientEnd
+	peers []*utils.ClientEnd
 	me    int // index into peers[]
 	rand  *rand.Rand
 
@@ -98,7 +98,7 @@ func (rf *Raft) stateString() string {
 func (rf *Raft) logInfo(format string, v ...interface{}) {
 	s := fmt.Sprintf(format, v...)
 	rf.tracer.Printf(s)
-	glog.V(common.VDebug).Infof("%s %s", rf.stateString(), s)
+	glog.V(utils.VDebug).Infof("%s %s", rf.stateString(), s)
 }
 
 // exists a new term
@@ -163,17 +163,20 @@ func (rf *Raft) UpdateReadLease(term int32, lease time.Time) {
 // Submit a command to raft
 // The command will be replicated to followers, then leader commmit, applied to the state machine by raftKV,
 // and finally response to the client
-func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int32, isLeader bool) {
+func (rf *Raft) SubmitCommand(command *pb.KVCommand) (index int, term int32, isLeader bool) {
 	term = rf.state.getTerm()
 	isLeader = rf.state.getRole() == leader
 	if !isLeader {
 		return -1, -1, false
 	}
 	isLeader = true
+	command.Timestamp = time.Now().UnixNano()
+	command.Term = term
+	command.Index = int32(rf.log.LastIndex() + 1)
 
-	if command.CmdType == common.CmdGet {
+	if command.GetCmdType() == pb.CommandType_Get {
 		if time.Now().Before(rf.state.readLease) {
-			glog.V(common.VDebug).Infof("Get with lease read %s", command.String())
+			glog.V(utils.VDebug).Infof("Get with lease read %s", command.String())
 			applyMsg := ApplyMsg{
 				Command: command,
 			}
@@ -181,13 +184,8 @@ func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int32,
 			return
 		}
 	}
-	command.Timestamp = time.Now().UnixNano()
 	// append to local log
-	logEntry := LogEntry{
-		Term:    term,
-		Command: command,
-	}
-	rf.log.Append(logEntry)
+	rf.log.Append(command)
 	index = rf.log.LastIndex()
 
 	go func() {
@@ -208,7 +206,7 @@ func (rf *Raft) SubmitCommand(command *common.KVCommand) (index int, term int32,
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //
-func NewRaft(peers []*common.ClientEnd, me int, persister store.Persister, log *store.LogStorage, applyCh chan ApplyMsg) *Raft {
+func NewRaft(peers []*utils.ClientEnd, me int, persister store.Persister, log *store.LogStorage, applyCh chan ApplyMsg) *Raft {
 	rf := new(Raft)
 	rf.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	rf.peers = peers
@@ -218,7 +216,7 @@ func NewRaft(peers []*common.ClientEnd, me int, persister store.Persister, log *
 	rf.log = log
 	rf.requestVoteChan = make(chan *RequestVoteSession)
 	rf.appendEntriesCh = make(chan *AppendEntriesSession)
-	rf.snapshotCh = make(chan *installSnapshotSession)
+	// rf.snapshotCh = make(chan *installSnapshotSession)
 	rf.shutdownCh = make(chan bool)
 	rf.termChangedCh = make(chan bool, 1)
 	rf.submitedCh = make(chan int, 10)

@@ -1,6 +1,5 @@
 syntax = "proto3";
 package pb;
-import "google/protobuf/timestamp.proto";
 
 // type and interface in RaftKV
 
@@ -20,7 +19,7 @@ message KVCommand {
     }
     int32 term = 5;
     int32 index = 6;
-    google.protobuf.Timestamp timestamp = 7;
+    int64 timestamp = 7;
 }
 
 message Session {
@@ -66,7 +65,7 @@ message OpenSessionRes {
 }
 
 service RaftKV {
-    rpc OpenSession(OpenSessionReq) returns (OpenSessionRes);
-    rpc Put(PutReq) returns (PutRes);
-    rpc Get(GetReq) returns (GetRes);
+    rpc OpenSession(OpenSessionReq) returns (OpenSessionRes) {}
+    rpc Put(PutReq) returns (PutRes) {}
+    rpc Get(GetReq) returns (GetRes) {}
 }

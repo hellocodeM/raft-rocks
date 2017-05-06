@@ -3,7 +3,7 @@ package raft
 import (
 	"time"
 
-	"github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
 )
 
@@ -65,8 +65,8 @@ func drainOut(ch <-chan int) {
 
 // replicator: trigger by peerCh, replicate log until nextIndex to each peer
 func (rf *Raft) replicator(peer int, lastIndexCh <-chan struct{}) {
-	glog.V(common.VDebug).Infof("%s Replicator for peer<%d>", rf.stateString(), peer)
-	defer glog.V(common.VDebug).Infof("Replicator of peer<%d> quit", peer)
+	glog.V(utils.VDebug).Infof("%s Replicator for peer<%d>", rf.stateString(), peer)
+	defer glog.V(utils.VDebug).Infof("Replicator of peer<%d> quit", peer)
 	if peer == rf.me {
 		rf.localReplicator(lastIndexCh)
 		return
@@ -78,9 +78,9 @@ func (rf *Raft) replicator(peer int, lastIndexCh <-chan struct{}) {
 			if !more {
 				return
 			}
-			glog.V(common.VDebug).Infof("%s Replicate log to peer<%d>", rf.stateString(), peer)
+			glog.V(utils.VDebug).Infof("%s Replicate log to peer<%d>", rf.stateString(), peer)
 		case <-time.After(heartbeatTO):
-			glog.V(common.VDebug).Infof("%s Send heartbeat to peer<%d>", rf.stateString(), peer)
+			glog.V(utils.VDebug).Infof("%s Send heartbeat to peer<%d>", rf.stateString(), peer)
 		}
 		rf.replicateLog(peer, &retreatCnt)
 	}

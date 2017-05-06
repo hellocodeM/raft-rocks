@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	. "github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/pb"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -23,11 +23,11 @@ func TestLogStorage_Basic(t *testing.T) {
 	A.Equal(0, log.LastIndex())
 
 	// append an entry
-	entry := LogEntry{Term: 7}
+	entry := &pb.KVCommand{Term: 7}
 	log.Append(entry)
 	A.Equal(1, log.LastIndex())
 
-	A.Equal(&entry, log.At(1))
+	A.Equal(entry, log.At(1))
 
 	// append multi entries
 	// [nil, 7]
@@ -35,7 +35,7 @@ func TestLogStorage_Basic(t *testing.T) {
 	// [nil, 8, 8, 8]
 	log.Append(entry)
 	entry.Term = 8
-	entries := []LogEntry{entry, entry, entry}
+	entries := []*pb.KVCommand{entry, entry, entry}
 	log.AppendAt(1, entries)
 
 	A.Equal(int32(8), log.At(1).Term)

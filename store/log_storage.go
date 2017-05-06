@@ -1,13 +1,12 @@
 package store
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 
-	. "github.com/HelloCodeMing/raft-rocks/common"
-
+	"github.com/HelloCodeMing/raft-rocks/pb"
 	"github.com/golang/glog"
+	"github.com/golang/protobuf/proto"
 )
 
 // A naive log storage, based on RocksDB.
@@ -55,23 +54,26 @@ func decodeIndex(buf []byte) int {
 	return int(binary.BigEndian.Uint32(buf))
 }
 
-func (l *LogStorage) Append(entry LogEntry) {
-	buf := new(bytes.Buffer)
-	entry.Encode(buf)
+func (l *LogStorage) Append(entry *pb.KVCommand) {
+	bs, err := proto.Marshal(entry)
+	if err != nil {
+		glog.Errorf("append fail: %s", err)
+	}
 	l.lastIndex++
-	l.column.PutBytes(encodeIndex(l.lastIndex), buf.Bytes())
+	l.column.PutBytes(encodeIndex(l.lastIndex), bs)
 }
 
-func (l *LogStorage) AppendAt(pos int, entries []LogEntry) {
+func (l *LogStorage) AppendAt(pos int, entries []*pb.KVCommand) {
 	if pos > l.lastIndex+1 {
 		glog.Fatalf("No allow hole in log,lastIndex=%d,appendAt=%d", l.lastIndex, pos)
 	}
 	l.lastIndex = pos + len(entries) - 1
-	buf := new(bytes.Buffer)
 	for i, entry := range entries {
-		buf.Reset()
-		entry.Encode(buf)
-		l.column.PutBytes(encodeIndex(pos+i), buf.Bytes())
+		bs, err := proto.Marshal(entry)
+		if err != nil {
+			glog.Errorf("append fail: %s", err)
+		}
+		l.column.PutBytes(encodeIndex(pos+i), bs)
 	}
 }
 
@@ -79,26 +81,26 @@ func (l *LogStorage) DiscardUntil(lastIndex int) {
 	panic("not implemented")
 }
 
-func (l *LogStorage) At(index int) *LogEntry {
+func (l *LogStorage) At(index int) *pb.KVCommand {
 	value, ok := l.column.GetBytes(encodeIndex(index))
 	if !ok {
 		glog.Fatal("invalid index ", index)
 	}
-	entry := &LogEntry{}
-	entry.Decode(bytes.NewBuffer(value))
+	entry := &pb.KVCommand{}
+	proto.Unmarshal(value, entry)
 	return entry
 }
 
-func (l *LogStorage) Slice(start, end int) []LogEntry {
-	entries := make([]LogEntry, 0, end-start)
+func (l *LogStorage) Slice(start, end int) []*pb.KVCommand {
+	entries := make([]*pb.KVCommand, 0, end-start)
 	for ; start < end; start++ {
-		entries = append(entries, *l.At(start))
+		entries = append(entries, l.At(start))
 	}
 	return entries
 }
 
-func (l *LogStorage) Last() *LogEntry {
-	return l.At(l.lastIndex)
+func (l *LogStorage) Last() *pb.KVCommand {
+	return l.At(int(l.lastIndex))
 }
 
 func (l *LogStorage) LastIndex() int {

@@ -15,7 +15,8 @@ func BenchmarkGet(b *testing.B) {
 	defer client.closeSession()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		client.Get("1")
+		k := strconv.FormatInt(rand.Int63(), 10)
+		client.Get(k)
 	}
 }
 

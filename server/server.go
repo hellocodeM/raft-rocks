@@ -2,16 +2,18 @@ package main
 
 import (
 	"flag"
+	"net"
 	_ "net/http/pprof"
 	"os"
-	"strings"
-
 	"os/signal"
+	"strings"
 	"syscall"
 
-	"github.com/HelloCodeMing/raft-rocks/common"
+	"github.com/HelloCodeMing/raft-rocks/pb"
 	"github.com/HelloCodeMing/raft-rocks/raftkv"
+	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -38,10 +40,10 @@ func main() {
 	defer glog.Infof("Stop raft-rocks")
 
 	// create clientEnds
-	servers := make([]*common.ClientEnd, 0, len(Replicas)-1)
+	servers := make([]*utils.ClientEnd, 0, len(Replicas)-1)
 	me := -1
 	for i, replica := range strings.Split(Replicas, ",") {
-		servers = append(servers, common.MakeClientEnd(replica))
+		servers = append(servers, utils.MakeClientEnd(replica))
 		if replica == ServerAddr {
 			me = i
 		}
@@ -51,7 +53,11 @@ func main() {
 	}
 	// start server
 	raftkv := raftkv.StartRaftKV(servers, me)
-	server := common.MakeServerEnd(ServerAddr)
-	server.AddService(raftkv)
-	server.Serve()
+	lis, err := net.Listen("tcp", ServerAddr)
+	if err != nil {
+		glog.Fatal(err)
+	}
+	server := grpc.NewServer()
+	pb.RegisterRaftKVServer(server, raftkv)
+	server.Serve(lis)
 }

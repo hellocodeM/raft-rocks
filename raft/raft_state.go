@@ -8,8 +8,8 @@ import (
 
 	"encoding/json"
 
-	"github.com/HelloCodeMing/raft-rocks/common"
 	"github.com/HelloCodeMing/raft-rocks/store"
+	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
 )
 
@@ -134,8 +134,8 @@ func (s *raftState) checkApply() {
 		}
 		entry := rf.log.At(s.LastApplied)
 		msg := ApplyMsg{
-			Index:       s.LastApplied,
-			Command:     entry.Command,
+			Index:       int32(s.LastApplied),
+			Command:     entry,
 			Term:        entry.Term,
 			UseSnapshot: false,
 			Snapshot:    []byte{},
@@ -143,7 +143,7 @@ func (s *raftState) checkApply() {
 		rf.applyCh <- msg
 	}
 	if s.LastApplied > old {
-		glog.V(common.VDebug).Infof("%s Applyed commands until index=%d", s.String(), s.LastApplied)
+		glog.V(utils.VDebug).Infof("%s Applyed commands until index=%d", s.String(), s.LastApplied)
 	}
 }
 
@@ -151,6 +151,7 @@ func (s *raftState) changeRole(role raftRole) {
 	s.Lock()
 	defer s.Unlock()
 	s.Role = role
+
 }
 
 func (s *raftState) becomeFollowerUnlocked(candidateID int32, term int32) {
@@ -221,7 +222,7 @@ func (s *raftState) checkLeaderCommit() (updated bool) {
 		}
 		if cnt >= rf.majority() {
 			s.commitUntil(N)
-			glog.V(common.VDebug).Infof("%s Leader update commitIndex: %d", s.String(), s.CommitIndex)
+			glog.V(utils.VDebug).Infof("%s Leader update commitIndex: %d", s.String(), s.CommitIndex)
 			updated = true
 			break
 		}

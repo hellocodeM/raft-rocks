@@ -2,9 +2,7 @@ package raft
 
 import (
 	"encoding/gob"
-	"fmt"
 	"io"
-	"log"
 
 	"golang.org/x/net/trace"
 )
@@ -56,6 +54,7 @@ type installSnapshotSession struct {
 	tr    trace.Trace
 }
 
+/*
 func (session *installSnapshotSession) trace(format string, a ...interface{}) {
 	session.tr.LazyPrintf(format, a...)
 	if DumpRPCInstallSnapshotTracing {
@@ -84,7 +83,6 @@ func (rf *Raft) notifySMTakeSnapshot() {
 	// rf.lastApplied = rf.lastIncludedIndex
 }
 
-/*
 // InstallSnapshot raft InstallSnapshot RPC
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	// prepare
