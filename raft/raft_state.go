@@ -133,6 +133,9 @@ func (s *raftState) checkApply() {
 			panic(rf.String())
 		}
 		entry := rf.log.At(s.LastApplied)
+		if entry == nil {
+			break
+		}
 		msg := ApplyMsg{Command: entry}
 		rf.applyCh <- msg
 	}

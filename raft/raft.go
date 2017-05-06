@@ -112,16 +112,15 @@ func (rf *Raft) UpdateReadLease(term int32, lease time.Time) {
 // SubmitCommand submit a command to raft
 // The command will be replicated to followers, then leader commmit, applied to the state machine by raftKV,
 // and finally response to the client
-func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (index int, term int32, isLeader bool) {
-	term = rf.state.getTerm()
+func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (isLeader bool) {
+	term := rf.state.getTerm()
 	isLeader = rf.state.getRole() == pb.RaftRole_Leader
 	if !isLeader {
-		return -1, -1, false
+		return false
 	}
 	isLeader = true
 	command.Timestamp = time.Now().UnixNano()
 	command.Term = term
-	command.Index = int32(rf.log.LastIndex() + 1)
 
 	if command.GetCmdType() == pb.CommandType_Get {
 		if time.Now().Before(rf.state.readLease) {
@@ -134,8 +133,8 @@ func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (index
 		}
 	}
 	// append to local log
-	rf.log.Append(command)
-	index = rf.log.LastIndex()
+	index := rf.log.Append(command)
+	command.Index = int32(index)
 
 	go func() {
 		rf.submitedCh <- index
@@ -172,6 +171,7 @@ func NewRaft(peers []*utils.ClientEnd, me int, persister store.Persister, log *s
 
 	glog.Infof("%s Created raft instance: %s", rf, rf.String())
 	go rf.startStateMachine()
+	rf.registerDebugHandler()
 
 	return rf
 }

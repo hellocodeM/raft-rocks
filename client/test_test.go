@@ -8,29 +8,37 @@ import (
 )
 
 func BenchmarkGet(b *testing.B) {
-	client, err := MakeClerk(strings.Split(ServerAddrs, ","))
-	if err != nil {
-		panic(err)
-	}
-	defer client.closeSession()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		k := strconv.FormatInt(rand.Int63(), 10)
-		client.Get(k)
-	}
+	b.RunParallel(func(sub *testing.PB) {
+		b.StopTimer()
+		client, err := MakeClerk(strings.Split(ServerAddrs, ","))
+		if err != nil {
+			panic(err)
+		}
+		defer client.closeSession()
+
+		b.StartTimer()
+		for sub.Next() {
+			k := strconv.FormatInt(rand.Int63(), 10)
+			client.Get(k)
+		}
+	})
 }
 
 func BenchmarkPut(b *testing.B) {
-	client, err := MakeClerk(strings.Split(ServerAddrs, ","))
-	if err != nil {
-		panic(err)
-	}
-	defer client.closeSession()
-	b.ResetTimer()
+	b.RunParallel(func(sub *testing.PB) {
+		b.StopTimer()
+		client, err := MakeClerk(strings.Split(ServerAddrs, ","))
+		if err != nil {
+			panic(err)
+		}
+		defer client.closeSession()
 
-	for i := 0; i < b.N; i++ {
-		k := strconv.FormatInt(rand.Int63(), 10)
-		v := strconv.FormatInt(rand.Int63(), 10)
-		client.Put(k, v)
-	}
+		b.StartTimer()
+		for sub.Next() {
+			k := strconv.FormatInt(rand.Int63(), 10)
+			v := strconv.FormatInt(rand.Int63(), 10)
+			client.Put(k, v)
+		}
+
+	})
 }

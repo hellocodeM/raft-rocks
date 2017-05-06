@@ -146,10 +146,11 @@ func (kv *RaftKV) hashCommand(cmd *pb.KVCommand) int {
 func (kv *RaftKV) waitFor(cmd *pb.KVCommand) (out interface{}, err error) {
 	hashVal := kv.hashCommand(cmd)
 	kv.mu.Lock()
-	kv.waiting[hashVal] = make(chan interface{}, 1)
+	ch := make(chan interface{}, 1)
+	kv.waiting[hashVal] = ch
 	kv.mu.Unlock()
 	select {
-	case res := <-kv.waiting[hashVal]:
+	case res := <-ch:
 		out = res
 		err = nil
 	case <-time.After(OpTimeout):
@@ -182,7 +183,7 @@ func (kv *RaftKV) checkSession(session *pb.Session) bool {
 }
 
 func (kv *RaftKV) submitCommand(ctx context.Context, cmd *pb.KVCommand) (interface{}, error) {
-	_, _, isLeader := kv.rf.SubmitCommand(ctx, cmd)
+	isLeader := kv.rf.SubmitCommand(ctx, cmd)
 	if !isLeader {
 		return nil, errNotLeader
 	}
