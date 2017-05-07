@@ -16,8 +16,9 @@ import (
 // Hold state of raft, coordinate the updating and reading
 type raftState struct {
 	sync.RWMutex
-	raft      *Raft
+	log       *store.LogStorage
 	persister store.Persister
+	applyCh   chan<- *ApplyMsg
 
 	// once initialized, they will not be changed
 	Me       int
@@ -60,7 +61,7 @@ func (s *raftState) getTerm() int32 {
 	return s.CurrentTerm
 }
 
-func (s *raftState) getCommied() int {
+func (s *raftState) getCommited() int {
 	s.RLock()
 	defer s.RUnlock()
 	return s.CommitIndex
@@ -126,18 +127,18 @@ func (s *raftState) checkFollowerCommit(leaderCommit int) bool {
 // any command to apply
 func (s *raftState) checkApply() {
 	old := s.LastApplied
-	rf := s.raft
+	log := s.log
 	for s.CommitIndex > s.LastApplied {
 		s.applyOne()
-		if rf.log.LastIndex() < s.LastApplied {
-			panic(rf.String())
+		if log.LastIndex() < s.LastApplied {
+			panic(s)
 		}
-		entry := rf.log.At(s.LastApplied)
+		entry := log.At(s.LastApplied)
 		if entry == nil {
 			break
 		}
-		msg := ApplyMsg{Command: entry}
-		rf.applyCh <- msg
+		msg := &ApplyMsg{Command: entry}
+		s.applyCh <- msg
 	}
 	if s.LastApplied > old {
 		glog.V(utils.VDebug).Infof("%s Applyed commands until index=%d", s.String(), s.LastApplied)
@@ -164,6 +165,8 @@ func (s *raftState) becomeFollower(candidateID int32, term int32) {
 	s.CurrentTerm = term
 	s.VotedFor = candidateID
 	s.Role = pb.RaftRole_Follower
+	s.MatchIndex = nil
+	s.NextIndex = nil
 	s.persist()
 }
 
@@ -173,6 +176,8 @@ func (s *raftState) becomeCandidate() int32 {
 	s.Role = pb.RaftRole_Candidate
 	s.CurrentTerm++
 	s.VotedFor = int32(s.Me)
+	s.MatchIndex = nil
+	s.NextIndex = nil
 	s.persist()
 	return s.CurrentTerm
 }
@@ -183,6 +188,10 @@ func (s *raftState) becomeLeader() {
 	s.Role = pb.RaftRole_Leader
 	s.MatchIndex = make([]int, s.NumPeers)
 	s.NextIndex = make([]int, s.NumPeers)
+	lastIndex := s.log.LastIndex()
+	for i := range s.NextIndex {
+		s.NextIndex[i] = lastIndex + 1
+	}
 }
 
 func (s *raftState) replicatedToPeer(peer int, index int) {
@@ -198,7 +207,6 @@ func (s *raftState) replicatedToPeer(peer int, index int) {
 // update  commit index, use matchIndex from peers
 // NOTE: It's not thread-safe, should be synchronized by external lock
 func (s *raftState) checkLeaderCommit() (updated bool) {
-	rf := s.raft
 	lowerIndex := s.CommitIndex + 1
 	upperIndex := 0
 	// find max matchIndex
@@ -209,15 +217,15 @@ func (s *raftState) checkLeaderCommit() (updated bool) {
 	}
 	// if N > commitIndex, a majority of match[i] >= N, and log[N].term == currentTerm
 	// set commitIndex = N
-	for N := upperIndex; N >= lowerIndex && rf.log.At(N).Term == s.CurrentTerm; N-- {
+	for N := upperIndex; N >= lowerIndex && s.log.At(N).Term == s.CurrentTerm; N-- {
 		// count match[i] >= N
 		cnt := 1
 		for i, x := range s.MatchIndex {
-			if i != rf.me && x >= N {
+			if i != s.Me && x >= N {
 				cnt++
 			}
 		}
-		if cnt >= rf.majority() {
+		if cnt >= s.majority() {
 			s.commitUntil(N)
 			glog.V(utils.VDebug).Infof("%s Leader update commitIndex: %d", s.String(), s.CommitIndex)
 			updated = true
@@ -231,15 +239,13 @@ func (s *raftState) retreatForPeer(peer int) int {
 	s.Lock()
 	defer s.Unlock()
 	idx := &s.NextIndex[peer]
-	rf := s.raft
-	*idx = minInt(*idx, rf.log.LastIndex())
-	if *idx > rf.lastIncludedIndex {
-		oldTerm := rf.log.At(*idx).Term
-		for *idx > rf.lastIncludedIndex+1 && rf.log.At(*idx).Term == oldTerm {
-			*idx--
-		}
+	log := s.log
+	*idx = minInt(*idx, log.LastIndex())
+	oldTerm := log.At(*idx).Term
+	for *idx > 0 && log.At(*idx).Term == oldTerm {
+		*idx--
 	}
-	*idx = maxInt(*idx, rf.lastIncludedIndex+1)
+	*idx = maxInt(*idx, 1)
 	return *idx
 }
 
@@ -249,7 +255,7 @@ func (s *raftState) toReplicate(peer int) int {
 
 // If lease is granted in this term, and later than the old one, extend the lease
 func (s *raftState) updateReadLease(term int32, lease time.Time) {
-	if term == s.CurrentTerm && lease.After(s.readLease) {
+	if s.readLease.Before(time.Now()) && term == s.CurrentTerm && lease.After(s.readLease) {
 		s.readLease = lease
 		glog.Infof("%s Update read lease to %v", s.String(), lease)
 	}
@@ -260,16 +266,25 @@ func (s *raftState) String() string {
 }
 
 func (s *raftState) dump(writer io.Writer) {
-	buf, err := json.MarshalIndent(s, "", "\t")
+	state := map[string]interface{}{
+		"meta":         s,
+		"LogLastIndex": s.log.LastIndex(),
+	}
+	buf, err := json.MarshalIndent(state, "", "\t")
 	if err != nil {
 		panic(err)
 	}
 	writer.Write(buf)
 }
 
-func makeRaftState(raft *Raft, persister store.Persister, numPeers int, me int) *raftState {
+func (s *raftState) majority() int {
+	return s.NumPeers/2 + 1
+}
+
+func makeRaftState(log *store.LogStorage, persister store.Persister, applyCh chan<- *ApplyMsg, numPeers int, me int) *raftState {
 	s := &raftState{
-		raft:        raft,
+		log:         log,
+		applyCh:     applyCh,
 		NumPeers:    numPeers,
 		Me:          me,
 		CurrentTerm: 0,

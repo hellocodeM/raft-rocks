@@ -28,21 +28,16 @@ type Raft struct {
 	state *raftState
 
 	// raft send apply message to RaftKV
-	applyCh chan ApplyMsg
+	applyCh chan *ApplyMsg
 	// rpc channel
 	appendEntriesCh chan *AppendEntriesSession
 	requestVoteChan chan *RequestVoteSession
-	snapshotCh      chan *installSnapshotSession
 
 	// once submit a command, send lastLogIndex into this chan,
 	// the replicator will try best replicate all logEntries until lastLogIndex
 	submitedCh    chan int
 	termChangedCh chan bool
 	shutdownCh    chan bool // shutdown all components
-
-	// snapshot state
-	lastIncludedIndex int // snapshotted log index
-	lastIncludedTerm  int32
 }
 
 func (rf *Raft) majority() int {
@@ -68,8 +63,12 @@ func (rf *Raft) checkNewTerm(candidateID int32, newTerm int32) (beFollower bool)
 	return false
 }
 
+var (
+	r = rand.New(rand.NewSource(time.Now().UnixNano()))
+)
+
 func (rf *Raft) electionTO() time.Duration {
-	return time.Duration(rand.Int63()%((electionTimeoutMax - electionTimeoutMin).Nanoseconds())) + electionTimeoutMin
+	return time.Duration(r.Int63()%((electionTimeoutMax - electionTimeoutMin).Nanoseconds())) + electionTimeoutMin
 }
 
 func (rf *Raft) foreachPeer(f func(peer int)) {
@@ -93,9 +92,9 @@ func (rf *Raft) startStateMachine() {
 		case pb.RaftRole_Follower:
 			rf.doFollower()
 		case pb.RaftRole_Candidate:
-			rf.doLeader()
-		case pb.RaftRole_Leader:
 			rf.doCandidate()
+		case pb.RaftRole_Leader:
+			rf.doLeader()
 		}
 	}
 }
@@ -125,16 +124,13 @@ func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (isLea
 	if command.GetCmdType() == pb.CommandType_Get {
 		if time.Now().Before(rf.state.readLease) {
 			glog.V(utils.VDebug).Infof("Get with lease read %s", command.String())
-			applyMsg := ApplyMsg{
-				Command: command,
-			}
+			applyMsg := &ApplyMsg{Command: command}
 			rf.applyCh <- applyMsg
 			return
 		}
 	}
 	// append to local log
 	index := rf.log.Append(command)
-	command.Index = int32(index)
 
 	go func() {
 		rf.submitedCh <- index
@@ -143,10 +139,18 @@ func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (isLea
 	return
 }
 
+func (rf *Raft) IsLeader() bool {
+	return rf.state.getRole() == pb.RaftRole_Leader
+}
+
 func (rf *Raft) registerDebugHandler() {
 	// a http interface to dump raft state, for debug purpose
-	http.HandleFunc("/raft", func(res http.ResponseWriter, req *http.Request) {
+	http.HandleFunc("/raft/meta", func(res http.ResponseWriter, req *http.Request) {
 		rf.state.dump(res)
+		req.Body.Close()
+	})
+	http.HandleFunc("/raft/log", func(res http.ResponseWriter, req *http.Request) {
+		rf.log.Dump(res)
 		req.Body.Close()
 	})
 }
@@ -155,7 +159,7 @@ func (rf *Raft) registerDebugHandler() {
 // peers used to communicate with other peers in this raft group, need to be construct in advance
 // persister used to store metadata of raft, and log used for WAL
 // applyCh, apply a command to state machine through this channel
-func NewRaft(peers []*utils.ClientEnd, me int, persister store.Persister, log *store.LogStorage, applyCh chan ApplyMsg) *Raft {
+func NewRaft(peers []*utils.ClientEnd, me int, persister store.Persister, log *store.LogStorage, applyCh chan *ApplyMsg) *Raft {
 	rf := new(Raft)
 	rf.peers = peers
 	rf.me = me
@@ -167,7 +171,7 @@ func NewRaft(peers []*utils.ClientEnd, me int, persister store.Persister, log *s
 	rf.shutdownCh = make(chan bool)
 	rf.termChangedCh = make(chan bool, 10)
 	rf.submitedCh = make(chan int, 10)
-	rf.state = makeRaftState(rf, persister, len(peers), me)
+	rf.state = makeRaftState(log, persister, applyCh, len(peers), me)
 
 	glog.Infof("%s Created raft instance: %s", rf, rf.String())
 	go rf.startStateMachine()

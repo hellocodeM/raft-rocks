@@ -79,9 +79,9 @@ func (ck *Clerk) connect(server string) error {
 	}
 	ck.client = pb.NewRaftKVClient(ck.connection)
 	res, err := ck.client.OpenSession(context.Background(), &pb.OpenSessionReq{})
-	if err == nil {
+	if err == nil && res != nil {
 		ck.clientID = res.ClientId
-		glog.Infof("Clerk connect to %s succeed", server)
+		glog.Infof("Clerk connect to %s succeed, clientID=%d", server, ck.clientID)
 		return nil
 	}
 	glog.Infof("Clerk connect to %s failed,error=%s", server, err)
@@ -155,10 +155,9 @@ func (ck *Clerk) handleError(rpcErr error, err pb.Status) {
 	if rpcErr != nil {
 		glog.Warning("rpc error,error=", rpcErr)
 	} else if err != pb.Status_OK {
-		glog.Warning(err)
+		glog.Warning("Internal error: ", err)
 	}
 	ck.rollLeader()
-	glog.Warningf("try server: %d", ck.currentServer)
 	time.Sleep(RetryInterval)
 }
 
@@ -166,6 +165,7 @@ func (ck *Clerk) rollLeader() {
 	ck.closeSession()
 	ck.currentServer = (ck.currentServer + 1) % len(ck.serverAddrs)
 	server := ck.serverAddrs[ck.currentServer]
+	glog.Warningf("Try server: %s", server)
 	ck.connect(server)
 }
 

@@ -42,8 +42,6 @@ func (rf *Raft) doCandidate() {
 				glog.Infof("%s Candidate receive leader heartbeat", rf)
 				return
 			}
-		case <-rf.snapshotCh:
-			panic("not implemented")
 		}
 	}
 }

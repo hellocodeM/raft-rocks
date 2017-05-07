@@ -41,7 +41,7 @@ const (
 type RaftKV struct {
 	me      int
 	rf      *raft.Raft
-	applyCh chan raft.ApplyMsg
+	applyCh chan *raft.ApplyMsg
 	stopCh  chan bool
 
 	store     store.KVStorage
@@ -89,6 +89,9 @@ func (kv *RaftKV) Put(ctx context.Context, req *pb.PutReq) (*pb.PutRes, error) {
 
 // OpenSession rpc interface
 func (kv *RaftKV) OpenSession(ctx context.Context, req *pb.OpenSessionReq) (*pb.OpenSessionRes, error) {
+	if !kv.rf.IsLeader() {
+		return nil, errNotLeader
+	}
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.clientID++
@@ -190,9 +193,9 @@ func (kv *RaftKV) submitCommand(ctx context.Context, cmd *pb.KVCommand) (interfa
 	return kv.waitFor(cmd)
 }
 
-func (kv *RaftKV) applyCommand(msg raft.ApplyMsg) interface{} {
+func (kv *RaftKV) applyCommand(msg *raft.ApplyMsg) interface{} {
 	cmd := msg.Command
-	glog.Infof("Apply command at index %d to SM", cmd.Index)
+	glog.Infof("%s Apply command at index %d to SM", kv, cmd.Index)
 	// cmd.Trace("Apply start: %+v", cmd)
 
 	if cmd.CmdType != pb.CommandType_Get && !kv.isUnique(cmd) { // ignore duplicate command
@@ -225,11 +228,13 @@ func (kv *RaftKV) applyCommand(msg raft.ApplyMsg) interface{} {
 	case pb.CommandType_Noop:
 		panic("not implemented")
 	}
-	// update read lease
-	start := time.Unix(cmd.Timestamp/1E9, cmd.Timestamp%1E9)
-	start = start.Add(time.Second)
-	// TODO use flag
-	kv.rf.UpdateReadLease(cmd.Term, start)
+	if kv.rf.IsLeader() {
+		// update read lease
+		start := time.Unix(cmd.Timestamp/1E9, cmd.Timestamp%1E9)
+		start = start.Add(time.Second)
+		// TODO use flag
+		kv.rf.UpdateReadLease(cmd.Term, start)
+	}
 	return ret
 }
 
@@ -247,8 +252,12 @@ func (kv *RaftKV) doApply() {
 				if msg.Command == nil {
 					glog.Fatalf("Should not receive empty command")
 				}
-				res := kv.applyCommand(msg)
-				kv.notify(msg.Command, res)
+				if kv.rf.IsLeader() {
+					res := kv.applyCommand(msg)
+					kv.notify(msg.Command, res)
+				} else if msg.Command.CmdType == pb.CommandType_Put {
+					kv.applyCommand(msg)
+				}
 			}
 		case <-kv.stopCh:
 			return
@@ -285,7 +294,7 @@ func StartRaftKV(rpcServer *grpc.Server, servers []*utils.ClientEnd, me int) *Ra
 	kv := new(RaftKV)
 	kv.me = me
 
-	kv.applyCh = make(chan raft.ApplyMsg, 100)
+	kv.applyCh = make(chan *raft.ApplyMsg, 100)
 	kv.stopCh = make(chan bool)
 	kv.clientSN = make(map[int64]int64)
 	kv.waiting = make(map[int]chan interface{})

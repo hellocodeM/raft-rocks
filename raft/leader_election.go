@@ -2,11 +2,9 @@ package raft
 
 import (
 	"flag"
-	"fmt"
 	"time"
 
 	"github.com/HelloCodeMing/raft-rocks/pb"
-	"github.com/HelloCodeMing/raft-rocks/utils"
 	"github.com/golang/glog"
 	"golang.org/x/net/context"
 	"golang.org/x/net/trace"
@@ -25,12 +23,17 @@ func init() {
 type RequestVoteSession struct {
 	args  *pb.RequestVoteReq
 	reply *pb.RequestVoteRes
+	ctx   context.Context
 	tr    trace.Trace
 	done  chan bool
 }
 
-func NewRequestVoteSession(me int, args *pb.RequestVoteReq, reply *pb.RequestVoteRes) *RequestVoteSession {
-	tr := trace.New("Raft.RequestVote", fmt.Sprintf("peer<%d>", me))
+func NewRequestVoteSession(me int, ctx context.Context, args *pb.RequestVoteReq, reply *pb.RequestVoteRes) *RequestVoteSession {
+	tr, ok := trace.FromContext(ctx)
+	if !ok {
+		// tr = trace.New("Raft.RequestVote", fmt.Sprintf("peer<%d>", me))
+		glog.Fatal("no session in context")
+	}
 	return &RequestVoteSession{
 		args:  args,
 		reply: reply,
@@ -41,21 +44,21 @@ func NewRequestVoteSession(me int, args *pb.RequestVoteReq, reply *pb.RequestVot
 
 func (session *RequestVoteSession) trace(format string, arg ...interface{}) {
 	session.tr.LazyPrintf(format, arg...)
-	glog.V(utils.VDump).Infof("tracing RequestVote: %s", fmt.Sprintf(format, arg...))
 }
 
 func (rf *Raft) RequestVote(ctx context.Context, req *pb.RequestVoteReq) (res *pb.RequestVoteRes, err error) {
-	s := NewRequestVoteSession(rf.me, req, res)
-	s.trace("args: %+v", *req)
-	res.VoteGranted = false
+	res = &pb.RequestVoteRes{}
+	s := NewRequestVoteSession(rf.me, ctx, req, res)
+	s.trace("requestVoteChan <- session")
 	rf.requestVoteChan <- s
 	<-s.done
 
-	s.tr.Finish()
-	return nil, nil
+	// s.tr.Finish()
+	return res, nil
 }
 
 func (rf *Raft) processRequestVote(session *RequestVoteSession) {
+	session.trace("process RequestVote")
 	args := session.args
 	reply := session.reply
 	rf.checkNewTerm(args.CandidateId, args.Term)
@@ -64,12 +67,7 @@ func (rf *Raft) processRequestVote(session *RequestVoteSession) {
 	defer rf.state.Unlock()
 	voteFor := rf.state.VotedFor
 	voteForOk := voteFor == -1 || voteFor == args.CandidateId
-	var lastTerm int32
-	if rf.lastIncludedIndex < rf.log.LastIndex() {
-		lastTerm = rf.log.Last().Term
-	} else {
-		lastTerm = rf.lastIncludedTerm
-	}
+	lastTerm := rf.log.Last().Term
 	logOk := args.LastLogTerm > lastTerm || (args.LastLogTerm == lastTerm && int(args.LastLogIndex) >= rf.log.LastIndex())
 
 	reply.Term = rf.state.CurrentTerm
@@ -89,13 +87,16 @@ func (rf *Raft) processRequestVote(session *RequestVoteSession) {
 			session.trace("Not grant vote to <%d,%d>, because logMismatch: %v", args.CandidateId, args.Term, rf.log)
 		}
 	}
+	session.trace("done")
 	session.done <- true
 }
 
 func (rf *Raft) sendRequestVote(peer int, req *pb.RequestVoteReq) (*pb.RequestVoteRes, error) {
-	res, err := rf.peers[peer].RequestVote(context.TODO(), req)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	res, err := rf.peers[peer].RequestVote(ctx, req)
 	if err != nil {
-		glog.Warningf("Call peer<%d>'s Raft.RequestVote failed,error=%v", peer, err)
+		glog.Warningf("%s Call peer<%d>'s Raft.RequestVote failed,error=%v", rf, peer, err)
 		return res, err
 	}
 	rf.checkNewTerm(int32(peer), res.Term)
@@ -111,13 +112,9 @@ func (rf *Raft) requestingVote(votedCh chan<- bool) {
 	glog.Infoln(rf, " Requesting votes in parallel")
 
 	term := rf.state.getTerm()
-	lastIndex := rf.log.LastIndex()
-	var lastTerm int32
-	if rf.lastIncludedIndex < lastIndex {
-		lastTerm = rf.log.Last().Term
-	} else {
-		lastTerm = rf.lastIncludedTerm
-	}
+	last := rf.log.Last()
+	lastIndex := last.Index
+	lastTerm := last.Term
 	args := &pb.RequestVoteReq{
 		Term:         term,
 		CandidateId:  int32(rf.me),

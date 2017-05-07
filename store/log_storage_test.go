@@ -5,22 +5,28 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/HelloCodeMing/raft-rocks/pb"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestLogStorage_Basic(t *testing.T) {
-	const dbName = "testrocks"
-	cfName := []string{"default", "meta"}
+var (
+	dbName = "testrocks"
+	cfName = []string{"default", "meta"}
+)
 
+func TestLogStorage_Basic(t *testing.T) {
 	A := assert.New(t)
 	table, columns, err := OpenTable(dbName, cfName)
 	A.NoError(err)
 	log, err := MakeLogStorage(columns[0])
 	A.NoError(err)
+
+	// [nil]
 	A.Equal(0, log.LastIndex())
+	A.Equal(int32(0), log.Last().Term)
 
 	// append an entry
 	entry := &pb.KVCommand{Term: 7}
@@ -43,10 +49,13 @@ func TestLogStorage_Basic(t *testing.T) {
 	A.Equal(int32(8), log.At(3).Term)
 	A.Equal(3, log.LastIndex())
 	A.Equal(int32(8), log.Last().Term)
-	slice := log.Slice(1, 3)
-	A.Equal(2, len(slice))
+
+	// Slice
+	slice := log.Slice(1, 5)
+	A.Equal(3, len(slice))
 	A.Equal(int32(8), slice[0].Term)
 	A.Equal(int32(8), slice[1].Term)
+	A.Equal(int32(8), slice[2].Term)
 
 	// String
 	fmt.Println(log)
@@ -75,4 +84,47 @@ func TestEncodeIndex(t *testing.T) {
 	A.Equal(n1 < n2, bytes.Compare(b1, b2) == -1)
 	A.Equal(n1, decodeIndex(b1))
 	A.Equal(n2, decodeIndex(b2))
+}
+
+func TestConcurrentRead(t *testing.T) {
+	os.RemoveAll(dbName)
+	A := assert.New(t)
+	table, columns, err := OpenTable(dbName, cfName)
+	A.NoError(err)
+	defer os.RemoveAll(dbName)
+	defer table.Close()
+	log, err := MakeLogStorage(columns[0])
+	A.NoError(err)
+
+	// create one goroutine continously append log,
+	// and another goroutine perform random read
+	// the reading result should be consistent
+	const N = 10000
+	const Concurrency = 10
+	wg := sync.WaitGroup{}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 1; i < N; i++ {
+			entry := &pb.KVCommand{Index: int32(i)}
+			log.Append(entry)
+		}
+	}()
+	wg.Add(Concurrency)
+	for k := 0; k < Concurrency; k++ {
+		go func() {
+			defer wg.Done()
+			for i := 1; i < N; i++ {
+				index := rand.Intn(i)
+				if log.LastIndex() < index {
+					index = log.LastIndex()
+				}
+				entry := log.At(index)
+				A.NotNil(entry)
+				A.Equal(int32(index), entry.Index)
+			}
+		}()
+	}
+	wg.Wait()
 }
