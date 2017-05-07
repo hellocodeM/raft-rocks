@@ -119,7 +119,7 @@ func (rf *Raft) processAppendEntries(session *AppendEntriesSession) {
 func (rf *Raft) replicateLog(peer int, retreatCnt *int32) {
 	// if rf.nextIndex[peer] <= last log Index, send entries until lastLogIndex
 	// else send heartbeat, choose empty last log entry to send
-	const BatchSize = 20
+	const BatchSize = 100
 	peerStr := fmt.Sprintf("peer<%d>", peer)
 	rf.state.RLock()
 	isHeartBeat := false

@@ -65,7 +65,7 @@ func (kv *RaftKV) Get(ctx context.Context, req *pb.GetReq) (*pb.GetRes, error) {
 	cmd.CmdType = pb.CommandType_Get
 	cmd.Command = &pb.KVCommand_GetCommand{GetCommand: req}
 	res, err := kv.submitCommand(ctx, cmd)
-	if err != nil {
+	if err != nil || res == nil {
 		return nil, err
 	}
 	return res.(*pb.GetRes), err
@@ -81,7 +81,7 @@ func (kv *RaftKV) Put(ctx context.Context, req *pb.PutReq) (*pb.PutRes, error) {
 	cmd.CmdType = pb.CommandType_Put
 	cmd.Command = &pb.KVCommand_PutCommand{PutCommand: req}
 	res, err := kv.submitCommand(ctx, cmd)
-	if err != nil {
+	if err != nil || res == nil {
 		return nil, err
 	}
 	return res.(*pb.PutRes), err

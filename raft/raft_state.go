@@ -116,8 +116,9 @@ func (s *raftState) checkNewTerm(newTerm int32) bool {
 func (s *raftState) checkFollowerCommit(leaderCommit int) bool {
 	s.Lock()
 	defer s.Unlock()
-	if leaderCommit > s.CommitIndex {
-		s.commitUntil(leaderCommit)
+	// Have uncommited log, but leader has commited them
+	if s.CommitIndex < leaderCommit && s.CommitIndex < s.log.LastIndex() {
+		s.commitUntil(minInt(leaderCommit, int(s.log.LastIndex())))
 		s.checkApply()
 		return true
 	}
