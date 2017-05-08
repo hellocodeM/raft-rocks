@@ -70,7 +70,6 @@ func (s *raftState) getCommited() int {
 const (
 	currentTerm = "currentTerm"
 	votedFor    = "votedFor"
-	commitIndex = "commitIndex"
 	lastApplied = "lastApplied"
 )
 
@@ -86,10 +85,6 @@ func (s *raftState) restore() {
 	if !ok {
 		s.VotedFor = -1
 	}
-	commit, ok := s.persister.LoadInt32(commitIndex)
-	if ok {
-		s.CommitIndex = int(commit)
-	}
 	apply, ok := s.persister.LoadInt32(lastApplied)
 	if ok {
 		s.LastApplied = int(apply)
@@ -98,7 +93,6 @@ func (s *raftState) restore() {
 
 func (s *raftState) commitUntil(index int) {
 	s.CommitIndex = index
-	s.persister.StoreInt32(commitIndex, int32(index))
 }
 
 func (s *raftState) applyOne() {
