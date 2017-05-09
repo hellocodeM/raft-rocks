@@ -123,8 +123,13 @@ func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (isLea
 
 	if command.GetCmdType() == pb.CommandType_Get {
 		if time.Now().Before(rf.state.readLease) {
-			glog.V(utils.VDebug).Infof("Get with lease read %s", command.String())
+			readIndex := rf.state.getCommited()
+			glog.V(utils.VDebug).Infof("Get with lease read readIndex=%d,command=%v", readIndex, command)
 			applyMsg := &ApplyMsg{Command: command}
+			for rf.state.LastApplied < readIndex {
+				glog.V(utils.VDebug).Infof("Lease read: lastApplied=%d < readIndex=%d, wait for a moment", rf.state.LastApplied, readIndex)
+				time.Sleep(5 * time.Millisecond)
+			}
 			rf.applyCh <- applyMsg
 			return
 		}
