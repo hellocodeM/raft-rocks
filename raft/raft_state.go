@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -201,33 +202,19 @@ func (s *raftState) replicatedToPeer(peer int, index int) {
 
 // update  commit index, use matchIndex from peers
 // NOTE: It's not thread-safe, should be synchronized by external lock
-func (s *raftState) checkLeaderCommit() (updated bool) {
-	lowerIndex := s.CommitIndex + 1
-	upperIndex := 0
-	// find max matchIndex
+func (s *raftState) checkLeaderCommit() bool {
+	matches := make([]int, 0, len(s.MatchIndex))
 	for _, x := range s.MatchIndex {
-		if x > upperIndex {
-			upperIndex = x
-		}
+		matches = append(matches, x)
 	}
-	// if N > commitIndex, a majority of match[i] >= N, and log[N].term == currentTerm
-	// set commitIndex = N
-	for N := upperIndex; N >= lowerIndex && s.log.At(N).Term == s.CurrentTerm; N-- {
-		// count match[i] >= N
-		cnt := 1
-		for i, x := range s.MatchIndex {
-			if i != s.Me && x >= N {
-				cnt++
-			}
-		}
-		if cnt >= s.majority() {
-			s.commitUntil(N)
-			glog.V(utils.VDebug).Infof("%s Leader update commitIndex: %d", s.String(), s.CommitIndex)
-			updated = true
-			break
-		}
+	sort.Sort(sort.Reverse(sort.IntSlice(matches)))
+	newC := matches[s.majority()-1]
+	if newC > s.CommitIndex {
+		s.commitUntil(newC)
+		glog.V(utils.VDebug).Infof("%s Leader update commitIndex: %d", s.String(), newC)
+		return true
 	}
-	return
+	return false
 }
 
 func (s *raftState) retreatForPeer(peer int) int {
