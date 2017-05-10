@@ -94,6 +94,7 @@ func (s *raftState) restore() {
 
 func (s *raftState) commitUntil(index int) {
 	s.CommitIndex = index
+	s.log.CommitTo(index)
 }
 
 func (s *raftState) applyOne() {

@@ -18,6 +18,9 @@ import (
 type LogStorage struct {
 	column *TableColumn
 
+	cache  map[int]*pb.KVCommand
+	offset int
+
 	mu        sync.Mutex
 	lastIndex int32 // log start from 1, at 0 it's an empty entry.
 }
@@ -27,6 +30,7 @@ func MakeLogStorage(column *TableColumn) (*LogStorage, error) {
 	res := &LogStorage{
 		column:    column,
 		lastIndex: 0,
+		cache:     make(map[int]*pb.KVCommand),
 	}
 	res.restoreLastIndex()
 	return res, nil
@@ -73,6 +77,8 @@ func (l *LogStorage) Append(entry *pb.KVCommand) int {
 	defer l.mu.Unlock()
 	newIndex := int(atomic.LoadInt32(&l.lastIndex)) + 1
 	entry.Index = int32(newIndex)
+	l.cache[newIndex] = entry
+
 	bs, err := proto.Marshal(entry)
 	if err != nil {
 		glog.Error("append fail: %s", err)
@@ -90,6 +96,7 @@ func (l *LogStorage) AppendAt(pos int, entries []*pb.KVCommand) {
 	defer l.mu.Unlock()
 	for i, entry := range entries {
 		entry.Index = int32(pos + i)
+		l.cache[int(entry.Index)] = entry
 		bs, err := proto.Marshal(entry)
 		if err != nil {
 			glog.Errorf("append fail: %s", err)
@@ -99,11 +106,13 @@ func (l *LogStorage) AppendAt(pos int, entries []*pb.KVCommand) {
 	atomic.StoreInt32(&l.lastIndex, int32(pos+len(entries)-1))
 }
 
-func (l *LogStorage) DiscardUntil(lastIndex int) {
-	panic("not implemented")
-}
-
 func (l *LogStorage) At(index int) *pb.KVCommand {
+	l.mu.Lock()
+	cached, ok := l.cache[index]
+	l.mu.Unlock()
+	if ok {
+		return cached
+	}
 	value, ok := l.column.GetBytes(encodeIndex(index))
 	if !ok {
 		panic("invalid index")
@@ -119,9 +128,25 @@ func (l *LogStorage) Slice(start, end int) []*pb.KVCommand {
 	}
 	entries := make([]*pb.KVCommand, 0, end-start)
 	for ; start < end; start++ {
-		entries = append(entries, l.At(start))
+		l.mu.Lock()
+		cached, ok := l.cache[start]
+		l.mu.Unlock()
+		if ok {
+			entries = append(entries, cached)
+		} else {
+			entries = append(entries, l.At(start))
+		}
 	}
 	return entries
+}
+
+// CommitTo uncache until idx
+func (l *LogStorage) CommitTo(idx int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for ; l.offset < idx; l.offset++ {
+		delete(l.cache, l.offset)
+	}
 }
 
 func (l *LogStorage) Last() *pb.KVCommand {
