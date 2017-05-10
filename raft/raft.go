@@ -2,7 +2,6 @@ package raft
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"net/http"
 	"time"
@@ -48,11 +47,6 @@ func (rf *Raft) String() string {
 	return rf.state.String()
 }
 
-func (rf *Raft) logInfo(format string, v ...interface{}) {
-	s := fmt.Sprintf(format, v...)
-	glog.V(utils.VDebug).Infof("%s %s", rf, s)
-}
-
 // exists a new term
 func (rf *Raft) checkNewTerm(candidateID int32, newTerm int32) (beFollower bool) {
 	if rf.state.checkNewTerm(newTerm) {
@@ -84,7 +78,7 @@ func (rf *Raft) startStateMachine() {
 	for {
 		select {
 		case <-rf.shutdownCh:
-			rf.logInfo("stop state machine")
+			glog.Info(rf, "Stop state machine")
 			return
 		default:
 		}
@@ -100,7 +94,7 @@ func (rf *Raft) startStateMachine() {
 }
 
 func (rf *Raft) Kill() {
-	rf.logInfo("Killing raft, wait for goroutines to quit")
+	glog.Info(rf, " Killing raft, wait for goroutines quit")
 	close(rf.shutdownCh)
 }
 
@@ -140,7 +134,7 @@ func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (isLea
 	go func() {
 		rf.submitedCh <- index
 	}()
-	rf.logInfo("SubmitCommand by leader, {index: %d, command: %v}", index, command)
+	glog.Infof("%s SubmitCommand by leader %v", rf, command)
 	return
 }
 

@@ -146,11 +146,11 @@ func (rf *Raft) requestingVote(votedCh chan<- bool) {
 	}
 	if votedCnt >= rf.majority() {
 		votedCh <- true
-		rf.logInfo("Requesting vote success, voted by majority")
+		glog.Info(rf, " Requesting vote success, voted by majority")
 	} else {
 		votedCh <- false
-		rf.logInfo("Requesting vote fail, unvoted by majority")
+		glog.Info(rf, " Requesting vote fail, unvoted by majority")
 	}
 
-	rf.logInfo("RequestingVote end: %d/%d", votedCnt, len(rf.peers))
+	glog.Infof("%s RequestingVote end: %d/%d", rf, votedCnt, len(rf.peers))
 }
