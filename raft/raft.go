@@ -105,11 +105,11 @@ func (rf *Raft) UpdateReadLease(term int32, lease time.Time) {
 // SubmitCommand submit a command to raft
 // The command will be replicated to followers, then leader commmit, applied to the state machine by raftKV,
 // and finally response to the client
-func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (isLeader bool) {
+func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (isLeader bool, readOnly bool) {
 	term := rf.state.getTerm()
 	isLeader = rf.state.getRole() == pb.RaftRole_Leader
 	if !isLeader {
-		return false
+		return false, false
 	}
 	isLeader = true
 	command.Timestamp = time.Now().UnixNano()
@@ -119,12 +119,11 @@ func (rf *Raft) SubmitCommand(ctx context.Context, command *pb.KVCommand) (isLea
 		if time.Now().Before(rf.state.readLease) {
 			readIndex := rf.state.getCommited()
 			glog.V(utils.VDebug).Infof("Get with lease read readIndex=%d,command=%v", readIndex, command)
-			applyMsg := &ApplyMsg{Command: command}
 			for rf.state.LastApplied < readIndex {
 				glog.V(utils.VDebug).Infof("Lease read: lastApplied=%d < readIndex=%d, wait for a moment", rf.state.LastApplied, readIndex)
-				time.Sleep(5 * time.Millisecond)
+				time.Sleep(time.Millisecond)
 			}
-			rf.applyCh <- applyMsg
+			readOnly = true
 			return
 		}
 	}

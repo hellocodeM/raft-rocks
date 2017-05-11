@@ -186,15 +186,17 @@ func (kv *RaftKV) checkSession(session *pb.Session) bool {
 }
 
 func (kv *RaftKV) submitCommand(ctx context.Context, cmd *pb.KVCommand) (interface{}, error) {
-	isLeader := kv.rf.SubmitCommand(ctx, cmd)
+	isLeader, readOnly := kv.rf.SubmitCommand(ctx, cmd)
 	if !isLeader {
 		return nil, errNotLeader
+	}
+	if readOnly {
+		return kv.applyCommand(cmd), nil
 	}
 	return kv.waitFor(cmd)
 }
 
-func (kv *RaftKV) applyCommand(msg *raft.ApplyMsg) interface{} {
-	cmd := msg.Command
+func (kv *RaftKV) applyCommand(cmd *pb.KVCommand) interface{} {
 	glog.Infof("%s Apply command at index %d to SM", kv, cmd.Index)
 	// cmd.Trace("Apply start: %+v", cmd)
 
@@ -253,10 +255,10 @@ func (kv *RaftKV) doApply() {
 					glog.Fatalf("Should not receive empty command")
 				}
 				if kv.rf.IsLeader() {
-					res := kv.applyCommand(msg)
+					res := kv.applyCommand(msg.Command)
 					kv.notify(msg.Command, res)
 				} else if msg.Command.CmdType == pb.CommandType_Put {
-					kv.applyCommand(msg)
+					kv.applyCommand(msg.Command)
 				}
 			}
 		case <-kv.stopCh:
